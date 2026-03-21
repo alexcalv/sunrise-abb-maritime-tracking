@@ -1,0 +1,5 @@
+model: yolov8n.pt
+input_path: data/sample.jpg
+output_path: outputs/detection_result.jpg
+conf_threshold: 0.25
+device: cpu

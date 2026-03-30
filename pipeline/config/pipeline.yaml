@@ -1,0 +1,40 @@
+pipeline:
+  name: SUNRISE_ABB
+  version: "1.0"
+
+broker:
+  url: "redis://localhost:6379/0"
+  result_backend: "redis://localhost:6379/1"
+  task_serializer: "json"
+  result_serializer: "json"
+  accept_content: ["json"]
+
+detector:
+  model: "yolov8n.pt"
+  confidence_threshold: 0.25
+  iou_threshold: 0.45
+  imgsz: 640
+  device: "cpu" # "0" for first GPU, "cuda" for auto
+  classes: [8] # null = all COCO classes; restrict e.g. [8] for "boat"
+
+ingestion:
+  vid:
+    root_dir: "../data/vid"
+    frame_step: 5 # extract every Nth frame from vid
+    supported_extensions: [".mp4", ".avi", ".mov"]
+  img:
+    root_dir: "../data/img"
+    supported_extensions: [".jpg", ".jpeg", ".png"]
+  batch_size: 8
+
+output:
+  results_dir: "outputs/detections"
+  annotated_dir: "outputs/annotated"
+  format: "json" # json or csv
+  save_annotated: true
+  bbox_color: [0, 255, 0]
+  bbox_thickness: 2
+
+workers:
+  concurrency: 4 # parallel worker processes
+  prefetch_multiplier: 1

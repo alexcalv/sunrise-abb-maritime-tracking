@@ -61,3 +61,9 @@ python run_pipeline.py --mode test --input ../data/sample.jpg
 - **output/aggregator.py** – Merges JSON results into a summary file.
 - **data/** – Place for datasets.
 - **outputs/** – Contains results, annotated frames, and summary.
+
+The system is distributed - a message broker (Redis, running locally via Memurai) is inbetween the data ingestion step and the actual inference workers, meaning that multiple worker processes can pull and process batches of frames in parallel rather than one at a time. 
+
+Detection results are saved as JSON files per frame and merged into a single summary.json for review, alongside annotated images with bounding boxes drawn. 
+
+The specific model is not trained yet! It should be swappable by changing the configuration file.

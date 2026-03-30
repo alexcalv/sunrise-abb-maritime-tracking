@@ -1,0 +1,25 @@
+services:
+  tracker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: maritime-tracker:local
+    container_name: maritime-tracker
+    working_dir: /workspace
+    tty: true
+    stdin_open: true
+    shm_size: "8gb"
+    environment:
+      YOLO_CONFIG_DIR: /tmp/Ultralytics
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+    volumes:
+      - ./data:/workspace/data
+      - ./models:/workspace/models
+      - ./results:/workspace/results
+      - ./configs:/workspace/configs
+      - ./trackers:/workspace/trackers
+      - ./scripts:/workspace/scripts
+      - ./README.md:/workspace/README.md:ro
+      - ./Makefile:/workspace/Makefile:ro
+    command: ["--help"]

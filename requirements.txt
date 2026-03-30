@@ -1,0 +1,9 @@
+ultralytics==8.4.31
+motmetrics==1.4.0
+pandas==2.3.0
+pyyaml==6.0.2
+opencv-python-headless==4.11.0.86
+lapx==0.5.11
+filterpy
+lap
+cython_bbox

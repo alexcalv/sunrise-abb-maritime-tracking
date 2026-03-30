@@ -1,0 +1,2 @@
+Note:
+Data has been split into image (img) and video (vid) data. In the repository, these folders act as placeholders.

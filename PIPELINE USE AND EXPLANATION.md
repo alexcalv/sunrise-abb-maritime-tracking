@@ -47,7 +47,7 @@ celery -A broker.celery_app worker --loglevel=info --concurrency=1 --pool=solo
 
 ### Terminal 2:
 ```bash
-python run_pipeline.py --mode test --input ../data/sample.jpg
+python run_pipeline.py
 ```
 
 ---

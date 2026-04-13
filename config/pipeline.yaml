@@ -1,0 +1,8 @@
+broker_url: redis://redis:6379/0
+result_backend: redis://redis:6379/1
+yolo_model: yolo26l.pt
+yolo_device: auto
+yolo_conf: 0.25
+yolo_iou: 0.45
+yolo_imgsz: 640
+yolo_classes: "8"

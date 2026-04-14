@@ -73,10 +73,13 @@ def build_parser():
     sp = sub.add_parser("track")
     sp.add_argument("--model", required=True)
     sp.add_argument("--source", required=True)
-    sp.add_argument("--tracker", required=True)
+    sp.add_argument(
+        "--tracker",
+        default="/workspace/config/trackers/botsort_maritime.yaml",
+    )
     sp.add_argument("--device", default=settings.yolo_device)
     sp.add_argument("--project", default="/workspace/outputs/track")
-    sp.add_argument("--name", default="run")
+    sp.add_argument("--name", default="botsort_run")
     sp.set_defaults(func=cmd_track)
 
     return p

@@ -3,3 +3,4 @@ redis>=5,<6
 pydantic>=2,<3
 opencv-python-headless>=4.9,<5
 ultralytics>=8.3
+lap>=0.5.12

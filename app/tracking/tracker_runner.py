@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from ultralytics import YOLO
 
 
@@ -12,7 +10,8 @@ def run_tracking(
     name: str,
 ):
     model = YOLO(model_path)
-    return model.track(
+
+    results = model.track(
         source=source,
         tracker=tracker_yaml,
         device=device,
@@ -21,5 +20,12 @@ def run_tracking(
         save=True,
         save_txt=True,
         persist=True,
+        stream=True,
         verbose=False,
     )
+
+    frames_processed = 0
+    for _ in results:
+        frames_processed += 1
+
+    return {"frames_processed": frames_processed}

@@ -9,6 +9,7 @@ from common.config import settings
 from ingestion.ingestor import build_tasks
 from output.aggregator import aggregate_clip
 from tracking.tracker_runner import run_tracking
+from output.render_video import render_annotated_video
 
 
 def wait_for_tasks(async_results, poll_seconds: float = 2.0) -> None:
@@ -55,7 +56,6 @@ def cmd_track(args):
     )
     print(result)
 
-
 def cmd_pipeline_full(args):
     clip_id = Path(args.source).stem
 
@@ -82,17 +82,28 @@ def cmd_pipeline_full(args):
     )
     print(aggregate_result)
 
-    track_result = run_tracking(
-        model_path=args.model,
-        source=args.source,
-        tracker_yaml=args.tracker,
-        device=args.device,
-        project=args.project,
-        name=args.name,
+    render_result = render_annotated_video(
+        frames_dir=settings.frames_dir,
+        worker_results_dir=settings.worker_results_dir,
+        output_video_path=f"/workspace/outputs/rendered/{clip_id}.mp4",
+        clip_id=clip_id,
+        fps=args.render_fps,
+        draw_labels=not args.no_labels,
     )
-    print(track_result)
+    print(render_result)
 
-
+def cmd_render_video(args):
+    result = render_annotated_video(
+        frames_dir=settings.frames_dir,
+        worker_results_dir=settings.worker_results_dir,
+        output_video_path=args.output,
+        clip_id=args.clip_id,
+        fps=args.fps,
+        draw_labels=not args.no_labels,
+    )
+    print(result)
+    
+    
 def build_parser():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="command", required=True)
@@ -117,6 +128,8 @@ def build_parser():
     sp.add_argument("--device", default=settings.yolo_device)
     sp.add_argument("--project", default="/workspace/outputs/track")
     sp.add_argument("--name", default="botsort_run")
+    sp.add_argument("--render-fps", type=float, default=30.0)
+    sp.add_argument("--no-labels", action="store_true")
     sp.set_defaults(func=cmd_pipeline_full)
 
     sp = sub.add_parser("track")
@@ -127,6 +140,13 @@ def build_parser():
     sp.add_argument("--project", default="/workspace/outputs/track")
     sp.add_argument("--name", default="botsort_run")
     sp.set_defaults(func=cmd_track)
+    
+    sp = sub.add_parser("render-video")
+    sp.add_argument("--clip-id", required=True)
+    sp.add_argument("--output", required=True)
+    sp.add_argument("--fps", type=float, default=30.0)
+    sp.add_argument("--no-labels", action="store_true")
+    sp.set_defaults(func=cmd_render_video)
 
     return p
 

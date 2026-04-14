@@ -11,14 +11,6 @@ class YoloDetector:
         self.model_name = model_name or settings.yolo_model
         self.device = device or settings.yolo_device
         self.model = YOLO(self.model_name)
-        
-    _DETECTOR = None
-
-    def get_detector():
-        global _DETECTOR
-        if _DETECTOR is None:
-            _DETECTOR = YoloDetector()
-        return _DETECTOR
 
     def infer_frame(self, image_path: str, frame_index: int) -> list[DetectionBox]:
         classes = None
@@ -63,3 +55,13 @@ class YoloDetector:
                 )
             )
         return out
+
+
+_DETECTOR: YoloDetector | None = None
+
+
+def get_detector() -> YoloDetector:
+    global _DETECTOR
+    if _DETECTOR is None:
+        _DETECTOR = YoloDetector()
+    return _DETECTOR

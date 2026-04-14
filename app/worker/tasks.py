@@ -7,7 +7,7 @@ from broker.celery_app import celery_app
 from common.config import settings
 from common.logging import setup_logging
 from common.schemas import FrameResult, FrameTask
-from worker.detector import YoloDetector, get_detector
+from worker.detector import get_detector
 from worker.persistence import persist_frame_result
 
 setup_logging()

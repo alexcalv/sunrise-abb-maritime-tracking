@@ -1,0 +1,52 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: maritime-redis
+    ports:
+      - "6379:6379"
+
+  worker:
+    build: .
+    image: maritime-tracker:consolidated
+    container_name: maritime-worker
+    entrypoint: [
+      "celery", "-A", "worker.tasks", "worker",
+      "--loglevel=INFO",
+      "--pool=solo",
+      "--concurrency=1",
+      "-Q", "celery"
+    ]
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      YOLO_MODEL: yolo26l.pt
+      YOLO_DEVICE: "0"
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      WORKER_RESULTS_DIR: /workspace/outputs/worker_results
+      FRAMES_DIR: /workspace/outputs/frames
+      AGGREGATED_DIR: /workspace/outputs/aggregated
+    depends_on:
+      - redis
+    volumes:
+      - ./data:/workspace/data
+      - ./outputs:/workspace/outputs
+      - ./config:/workspace/config
+      - ./models:/workspace/models
+
+  runner:
+    image: maritime-tracker:consolidated
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      YOLO_MODEL: yolo26l.pt
+      YOLO_DEVICE: auto
+      WORKER_RESULTS_DIR: /workspace/outputs/worker_results
+      FRAMES_DIR: /workspace/outputs/frames
+      AGGREGATED_DIR: /workspace/outputs/aggregated
+    depends_on:
+      - redis
+    volumes:
+      - ./data:/workspace/data
+      - ./outputs:/workspace/outputs
+      - ./config:/workspace/config
+      - ./models:/workspace/models

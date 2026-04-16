@@ -1,0 +1,9 @@
+dataset:
+  gt_dir: dataset/gt
+  trk_dir: dataset/tracking
+
+evaluation:
+  iou_threshold: 0.5
+
+runtime:
+  enabled: true

@@ -6,3 +6,4 @@ tmp_zip_branch/
 models/
 __pycache__/
 scripts
+.DS_Store

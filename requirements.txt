@@ -4,3 +4,6 @@ pydantic>=2,<3
 opencv-python-headless>=4.9,<5
 ultralytics>=8.3
 lap>=0.5.12
+motmetrics>=1.4,<2
+pandas>=2,<3
+timm>=1.0.0,<2

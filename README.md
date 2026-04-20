@@ -1,592 +1,237 @@
 # Maritime Tracking Pipeline
 
-Docker-first maritime vessel detection and tracking pipeline with distributed batch detection, aggregation, annotated video rendering, explicit tracker execution, and evaluation support.
+This project tracks maritime vessels in video and evaluates identity continuity through occlusion. The workflow combines YOLO-based detection, explicit multi-object tracking, MOT export, video rendering, quantitative evaluation, and offline identity repair.
 
-## Overview
+In practice, the main workflow is:
 
-This project is designed for maritime video analysis with a modular pipeline:
+`track -> MOT export -> render-video -> evaluate -> offline stitch`
 
-1. **Ingestion**
-   - Reads a video file or image folder
-   - Extracts frames
-   - Splits work into typed batch tasks
+That path has been exercised on both BoT-SORT and ByteTrack, and it is the basis for the current benchmark and demo set.
 
-2. **Broker**
-   - Uses Celery + Redis to dispatch batch jobs
+## Workflow Overview
 
-3. **Worker**
-   - Runs YOLO detection on frames
-   - Persists per-frame JSON outputs
+### 1. Ingestion and distributed detection
 
-4. **Aggregator**
-   - Merges worker outputs
-   - Produces:
-     - `summary.csv`
-     - MOT-style text output
-
-5. **Renderer**
-   - Draws detections back onto extracted frames
-   - Produces an annotated output video
-
-6. **Tracking**
-   - Runs explicit tracking with BoT-SORT or ByteTrack
-   - Kept separate from distributed detection for stability and reproducibility
-
-7. **Evaluation**
-   - Compares prediction outputs against MOT-style ground truth
-
----
-
-## Project Structure
-
-```
-.
-├── app/
-│   ├── broker/
-│   ├── common/
-│   ├── ingestion/
-│   ├── output/
-│   ├── tracking/
-│   ├── worker/
-│   └── scripts/
-├── config/
-│   └── trackers/
-├── data/
-│   ├── img/
-│   ├── vid/
-│   ├── gt/
-│   └── gt_eval/
-├── outputs/
-│   ├── frames/
-│   ├── worker_results/
-│   ├── aggregated/
-│   ├── rendered/
-│   ├── track/
-│   └── eval/
-├── Dockerfile
-├── docker-compose.yml
-├── docker-compose.gpu.yml
-└── requirements.txt
-````
-
----
-
-## Execution Modes
-
-This project supports two main execution modes:
-
-### 1. Distributed detection pipeline
-
-Use this when you want:
-
-* frame extraction
-* distributed YOLO detection
-* aggregated outputs
-* annotated detection video
+The project can extract frames, distribute detection batches through Celery and Redis, persist per-frame JSON results, and aggregate those detections back into summary files. This is useful for detector-side experiments and for separating ingestion from later stages.
 
 ### 2. Explicit tracking
 
-Use this when you want:
+Tracking runs directly on raw video or image folders with BoT-SORT or ByteTrack. Each run writes tracker MOT output together with a run summary, which makes the tracking stage reproducible and easy to evaluate later.
 
-* full tracker execution
-* BoT-SORT or ByteTrack
-* tracker outputs separated from distributed batch detection
 
-This separation is intentional. Detection distributes well across batches. Stateful tracking usually does not.
+### 3. Rendering
 
----
+Rendered videos can be produced directly from a source video and a MOT file. This is the main visualization path for tracker output and stitched output. A legacy detection-overlay mode is still available for the distributed detection path.
 
-## Requirements
+### 4. Evaluation
 
-* Docker
-* Docker Compose
-* NVIDIA GPU + NVIDIA Container Toolkit for GPU mode
-* or CPU-only mode if GPU is not available
+The evaluation utilities work with MOT-style ground truth. They support GT validation, GT construction from curated tracker fragments, and MOT metrics such as IDF1 and ID switch count.
 
----
+### 5. Offline stitching and ReID
 
-## Low-Resource Machines
+After tracking, the stitcher can reconnect trajectory fragments across occlusion gaps. It uses motion and bounding-box consistency, and can add appearance cues from vessel crops extracted from the source video. The stitched result is written as a separate run so the original tracker output remains intact.
 
-This project is distributed at the architecture level, but that does not mean it will automatically scale well on a single low-resource PC. If Redis, the worker, detection, and tracking all run on the same machine, they still compete for the same CPU, RAM, and GPU. In that situation, the system can fail because of memory pressure, especially VRAM, if concurrency is too high.
+### 6. Sparse localization evaluation
 
-The distributed pipeline helps because it lets you control the workload and, when needed, split components across multiple nodes. On a limited machine, the correct approach is to reduce concurrency and use lighter settings. Instead of launching many workers in parallel, use a single worker with sequential or near-sequential processing. This reduces the risk of out-of-memory failures and makes behavior more predictable.
+A separate sparse-localization path is available for manually annotated occlusion windows. It computes center-position error on selected frames and stays separate from the identity benchmark.
 
-### Recommended low-resource mode
+## Repository Structure
 
-For modest PCs or a single GPU with limited memory:
+```text
+app/
+  broker/        Celery wiring
+  common/        settings, logging, shared schemas
+  evaluation/    MOT parsing, GT helpers, evaluators
+  ingestion/     frame extraction and batch creation
+  output/        aggregation and video rendering
+  scripts/       CLI entrypoint
+  stitching/     offline track stitching and appearance matching
+  tracking/      tracker runner with MOT export
+  worker/        YOLO detector, Celery task, JSON persistence
 
-* use only 1 worker
-* use `--concurrency=1`
-* use `--pool=solo`
-* reduce `batch-size` to `4` or `8`
-* use a lighter model such as `yolo26m.pt` or `yolo26s.pt`
-* keep `imgsz` at `640` or reduce it to `512` if needed
-* run tracking as a separate stage after the distributed detection pipeline
-* avoid multiple CUDA processes at the same time
+config/
+  trackers/      BoT-SORT and ByteTrack configs
+  stitching/     motion-only and appearance-aware stitch configs
 
-### Recommended worker configuration
+data/
+  videos/        source clips
+  gt/            benchmark GT and manifests
 
-In `docker-compose.yml`, the `worker` service should look like this:
-
-```yaml
-worker:
-  build: .
-  image: maritime-tracker:consolidated
-  entrypoint:
-    [
-      "celery",
-      "-A", "worker.tasks",
-      "worker",
-      "--loglevel=INFO",
-      "--pool=solo",
-      "--concurrency=1"
-    ]
-  environment:
-    CELERY_BROKER_URL: redis://redis:6379/0
-    CELERY_RESULT_BACKEND: redis://redis:6379/1
-    YOLO_MODEL: yolo26m.pt
-    YOLO_DEVICE: "0"
-    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
-    WORKER_RESULTS_DIR: /workspace/outputs/worker_results
-    FRAMES_DIR: /workspace/outputs/frames
-    AGGREGATED_DIR: /workspace/outputs/aggregated
-  depends_on:
-    - redis
-  volumes:
-    - ./data:/workspace/data
-    - ./outputs:/workspace/outputs
-    - ./config:/workspace/config
-    - ./models:/workspace/models
+outputs/
+  demo/          rendered demo videos
+  eval/          evaluation artifacts
+  stitching/     batch stitch summaries
+  track/         tracker runs and stitched runs
 ```
 
-If you want to force CPU execution, replace:
+## Command-Line Workflows
 
-```yaml
-YOLO_DEVICE: "0"
-```
-
-with:
-
-```yaml
-YOLO_DEVICE: "cpu"
-```
-
-### Rule of thumb
-
-On a single weak machine, distributed does not mean aggressive parallelism. It means separating responsibilities and limiting concurrency so the system remains stable.
-
-### Recommended profiles
-
-Weak machine:
-
-* 1 worker
-* `concurrency=1`
-* `batch-size=4`
-* `yolo26s.pt` or `yolo26m.pt`
-
-Mid-range machine:
-
-* 1 worker
-* `concurrency=1`
-* `batch-size=8` or `16`
-* `yolo26m.pt`
-
-Stronger machine with comfortable GPU memory:
-
-* 1 or 2 workers, depending on real VRAM headroom
-* `concurrency=1` per worker
-* `batch-size=16`
-* `yolo26l.pt`
-
----
-
-## Build
-
-### GPU
+The Docker image entrypoint is:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml build
+python -m scripts.cli
 ```
 
-### CPU
+Main commands:
+
+| Command | Purpose |
+|---|---|
+| `pipeline-ingest` | extract frames and queue distributed detection batches |
+| `pipeline-aggregate` | aggregate worker JSON outputs into summaries |
+| `pipeline-full` | run ingest, wait for detection batches, aggregate, and render detections |
+| `track` | run BoT-SORT or ByteTrack and write MOT plus `run_summary.json` |
+| `render-video` | render a detection overlay or MOT overlay back onto video |
+| `evaluate` | compute MOT-style identity metrics against MOT ground truth |
+| `gt-merge-ids` | build curated GT from tracker fragments |
+| `gt-validate` | validate MOT-style GT files |
+| `stitch-tracks` | stitch one tracker run into a separate corrected run |
+| `stitch-batch` | stitch multiple runs and write a compact batch summary |
+| `evaluate-localization` | evaluate sparse manual localization annotations |
+
+## Representative Commands
+
+### BoT-SORT on a single clip
 
 ```bash
-docker compose build
-```
-
----
-
-## Start Services
-
-### GPU
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d redis worker
-```
-
-### CPU
-
-```bash
-docker compose up -d redis worker
-```
-
-Check service status:
-
-### GPU
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml ps
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml logs -f worker
-```
-
-### CPU
-
-```bash
-docker compose ps
-docker compose logs -f worker
-```
-
----
-
-## Distributed Detection Pipeline
-
-### Detection only
-
-This runs:
-
-* frame extraction
-* distributed YOLO detection
-* worker result persistence
-
-### GPU
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm --no-deps runner \
-  pipeline-ingest \
-  --source /workspace/data/vid/cut29#2.mp4 \
-  --batch-size 4 \
-  --frame-step 1
-```
-
-### CPU
-
-```bash
-docker compose run --rm --no-deps runner \
-  pipeline-ingest \
-  --source /workspace/data/vid/cut29#2.mp4 \
-  --batch-size 4 \
-  --frame-step 1
-```
-
-Monitor progress:
-
-```bash
-find outputs/worker_results/cut29#2 -type f | wc -l
-```
-
-Check worker logs:
-
-### GPU
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml logs --tail=200 worker
-```
-
-### CPU
-
-```bash
-docker compose logs --tail=200 worker
-```
-
----
-
-## Aggregate Detection Results
-
-### GPU
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm --no-deps runner \
-  pipeline-aggregate \
-  --clip-id cut29#2
-```
-
-### CPU
-
-```bash
-docker compose run --rm --no-deps runner \
-  pipeline-aggregate \
-  --clip-id cut29#2
-```
-
-Outputs:
-
-* `outputs/aggregated/cut29#2/summary.csv`
-* `outputs/aggregated/cut29#2/cut29#2.txt`
-
-Inspect:
-
-```bash
-head outputs/aggregated/cut29#2/summary.csv
-tail outputs/aggregated/cut29#2/summary.csv
-head outputs/aggregated/cut29#2/cut29#2.txt
-wc -l outputs/aggregated/cut29#2/cut29#2.txt
-```
-
----
-
-## Render Annotated Detection Video
-
-This step draws the distributed detection results back onto the extracted frames and saves a video.
-
-### GPU
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm --no-deps runner \
-  render-video \
-  --clip-id cut29#2 \
-  --output /workspace/outputs/rendered/cut29#2.mp4 \
-  --fps 30
-```
-
-### CPU
-
-```bash
-docker compose run --rm --no-deps runner \
-  render-video \
-  --clip-id cut29#2 \
-  --output /workspace/outputs/rendered/cut29#2.mp4 \
-  --fps 30
-```
-
-Output:
-
-* `outputs/rendered/cut29#2.mp4`
-
-Check:
-
-```bash
-find outputs/rendered -maxdepth 2 -type f | sort
-```
-
----
-
-## Full Detection Pipeline with Annotated Video
-
-This runs:
-
-* ingestion
-* task dispatch
-* wait for workers
-* aggregation
-* annotated video rendering
-
-### GPU
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm --no-deps runner \
-  pipeline-full \
-  --source /workspace/data/vid/cut29#2.mp4 \
-  --batch-size 16 \
-  --frame-step 1 \
-  --poll-seconds 2 \
-  --render-fps 30
-```
-
-### CPU
-
-```bash
-docker compose run --rm --no-deps runner \
-  pipeline-full \
-  --source /workspace/data/vid/cut29#2.mp4 \
-  --batch-size 8 \
-  --frame-step 1 \
-  --poll-seconds 2 \
-  --render-fps 30
-```
-
-Expected outputs:
-
-* `outputs/frames/cut29#2/...`
-* `outputs/worker_results/cut29#2/...`
-* `outputs/aggregated/cut29#2/summary.csv`
-* `outputs/aggregated/cut29#2/cut29#2.txt`
-* `outputs/rendered/cut29#2.mp4`
-
----
-
-## Tracking
-
-Tracking is intentionally separated from the distributed batch detection pipeline.
-
-### BoT-SORT on GPU
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm --no-deps runner \
-  track \
-  --model yolo26m.pt \
-  --source /workspace/data/vid/cut29#2.mp4 \
-  --tracker /workspace/config/trackers/botsort_maritime.yaml \
-  --device 0 \
-  --project /workspace/outputs/track \
-  --name botsort_run
-```
-
-### BoT-SORT on CPU
-
-```bash
-docker compose run --rm --no-deps runner \
-  track \
-  --model yolo26m.pt \
-  --source /workspace/data/vid/cut29#2.mp4 \
+docker compose run --rm runner track \
+  --model /workspace/models/YOLOV8M_CUSTOM.pt \
+  --source /workspace/data/videos/cut28#1.mp4 \
   --tracker /workspace/config/trackers/botsort_maritime.yaml \
   --device cpu \
   --project /workspace/outputs/track \
-  --name botsort_run
+  --name botsort_one
 ```
 
-### ByteTrack on GPU
+### ByteTrack on the same clip
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm --no-deps runner \
-  track \
-  --model yolo26m.pt \
-  --source /workspace/data/vid/cut29#2.mp4 \
+docker compose run --rm runner track \
+  --model /workspace/models/YOLOV8M_CUSTOM.pt \
+  --source /workspace/data/videos/cut28#1.mp4 \
   --tracker /workspace/config/trackers/bytetrack_maritime.yaml \
-  --device 0 \
+  --device cpu \
   --project /workspace/outputs/track \
-  --name bytetrack_run
+  --name bytetrack_one
 ```
 
-Inspect outputs:
+### Render stitched MOT back onto the source video
 
 ```bash
-find outputs/track/botsort_run -maxdepth 3 -type f | sort
-find outputs/track/bytetrack_run -maxdepth 3 -type f | sort
+docker compose run --rm runner render-video \
+  --source /workspace/data/videos/cut28#1.mp4 \
+  --mot-file /workspace/outputs/track/botsort_one/stitched/reid_appearance_v2/mot/cut28#1.txt \
+  --output /workspace/outputs/demo/stitching_reid_demo.mp4 \
+  --label-mode id
 ```
 
----
-
-## Evaluation
-
-Evaluation compares prediction outputs against MOT-style ground truth.
-
-Example:
+### Evaluate against curated MOT ground truth
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm --no-deps runner \
-  evaluate \
-  --pred-dir /workspace/outputs/track_eval/botsort \
-  --gt-dir /workspace/data/gt_eval/video29 \
-  --output /workspace/outputs/eval/botsort_metrics.csv
+docker compose run --rm runner evaluate \
+  --pred-dir /workspace/outputs/track/botsort_one/mot \
+  --gt-dir /workspace/data/gt/benchmark_v2_continuity/cut28_target \
+  --output /workspace/outputs/eval/benchmark_v2_continuity/cut28_target/botsort_one_original.csv \
+  --summary-json /workspace/outputs/eval/benchmark_v2_continuity/cut28_target/botsort_one_original.json
 ```
 
-Inspect:
+### Build continuity GT from tracker fragments
 
 ```bash
-cat outputs/eval/botsort_metrics.csv
+docker compose run --rm runner gt-merge-ids \
+  --input /workspace/outputs/track/botsort_one/mot/cut28#1.txt \
+  --output /workspace/data/gt/benchmark_v2_continuity/cut28_target/cut28#1.txt \
+  --source-ids 2 6 \
+  --gt-id 1 \
+  --class-id 0 \
+  --sort
 ```
 
----
-
-## Where Outputs Go
-
-### Distributed detection
-
-* `outputs/frames/<clip_id>/`
-* `outputs/worker_results/<clip_id>/`
-* `outputs/aggregated/<clip_id>/summary.csv`
-* `outputs/aggregated/<clip_id>/<clip_id>.txt`
-
-### Rendered detection video
-
-* `outputs/rendered/<clip_id>.mp4`
-
-### Tracker runs
-
-* `outputs/track/<run_name>/`
-
-### Evaluation
-
-* `outputs/eval/`
-
----
-
-## Troubleshooting
-
-### Worker stays idle and pipeline waits forever
-
-Check:
+### Stitch a tracker run
 
 ```bash
-docker compose logs -f worker
+docker compose run --rm runner stitch-tracks \
+  --pred-dir /workspace/outputs/track/botsort_one/mot \
+  --config /workspace/config/stitching/reid_appearance_v2.yaml
 ```
 
-Common causes:
-
-* worker import error
-* wrong Celery app path
-* queue mismatch
-* Redis not running
-
-### Redis hostname resolution failure
-
-Make sure `redis` is actually running:
+### Stitch a larger BoT-SORT run and summarize it
 
 ```bash
-docker compose ps
+docker compose run --rm runner stitch-batch \
+  --runs-root /workspace/outputs/track/botsort_all_videos \
+  --batch-dir /workspace/outputs/stitching/batches/reid_appearance_botsort_all_v1_refresh \
+  --config /workspace/config/stitching/reid_appearance_v1.yaml
 ```
 
-Avoid hardcoded conflicting container names across different projects.
-
-### GPU out of memory
-
-Reduce load:
-
-* set `--concurrency=1`
-* use `--pool=solo`
-* lower `batch-size`
-* switch from `yolo26l.pt` to `yolo26m.pt` or `yolo26s.pt`
-
-### Tracking does not produce output
-
-Make sure:
-
-* tracker config exists in `config/trackers/`
-* required tracker dependencies are installed in the image
-* the tracking generator is actually consumed if `stream=True` is used
-
-### Annotated video not generated
-
-The detection pipeline does not produce annotated video unless `render-video` or `pipeline-full` is run.
-
----
-
-## Recommended Workflow
-
-For a stable single-machine run:
-
-1. start Redis and one worker
-2. run distributed detection with a safe batch size
-3. wait for `outputs/worker_results` to stop increasing
-4. aggregate detections
-5. render the annotated detection video
-6. run tracking separately
-7. evaluate at the end
-
-This workflow is more robust than trying to do everything in parallel on weak hardware.
-
----
-
-## Stop Everything
-
-### GPU
+### Evaluate sparse localization windows
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml down --remove-orphans
+docker compose run --rm runner evaluate-localization \
+  --pred-dir /workspace/outputs/eval/benchmark_v2_continuity/cut28_target/pred_subsets/botsort_one_original/mot \
+  --gt-dir /workspace/data/gt/benchmark_v2_continuity/cut28_target/localization_sparse \
+  --output /workspace/outputs/eval/benchmark_v2_continuity_localization/cut28_target/botsort_one_original.csv \
+  --summary-json /workspace/outputs/eval/benchmark_v2_continuity_localization/cut28_target/botsort_one_original.json
 ```
 
-### CPU
+## Benchmark and Evaluation
 
-```bash
-docker compose down --remove-orphans
-```
+The current benchmark is `data/gt/benchmark_v2_continuity/benchmark_manifest.json`. It focuses on curated occlusion cases and identity continuity rather than full-scene annotation.
+
+Current cases:
+
+- `cut28_target`
+  - BoT-SORT original vs stitched
+  - ByteTrack original vs stitched
+- `cut29_target`
+  - BoT-SORT original vs refreshed stitched output
+- `cut34_target`
+  - BoT-SORT original vs refreshed stitched output
+
+Ground truth in this benchmark is semi-manual at the identity level, while bounding boxes are inherited from tracker outputs.
+
+The MOT evaluator reports:
+
+- `mota`
+- `motp`
+- `idf1`
+- `idp`
+- `idr`
+- `num_switches`
+- `num_fragmentations`
+- `precision`
+- `recall`
+
+Current benchmark results are simple:
+
+- each curated case shows one ID switch in the original evaluated tracker output
+- the stitched output removes that switch in all three cases
+- stitched outputs reach `IDF1 = 1.0` on those cases
+
+BoT-SORT and ByteTrack are directly comparable on `cut28_target`. Broader ByteTrack multi-case parity is still incomplete in the saved workspace.
+
+Sparse localization evaluation is defined separately in `data/gt/benchmark_v2_continuity/localization_sparse_manifest.json`. It uses manually annotated occlusion-window frames and reports:
+
+- `mean_center_error_px`
+- `median_center_error_px`
+- `max_center_error_px`
+- `evaluated_frame_count`
+
+## Practical Notes
+
+On a single machine, the distributed detection path works best with modest settings:
+
+- keep worker concurrency low
+- prefer one worker over many aggressive parallel workers
+- run explicit tracking as a separate stage
+
+This keeps the pipeline stable on modest hardware and reflects the way the project is currently used.
+
+For the distributed worker path, note that the base `worker` service in `docker-compose.yml` still defaults to `YOLO_DEVICE: "0"`. For CPU-only execution, override the device explicitly.
+
+## Current Limitations
+
+- The distributed detection pipeline is implemented, but most runtime coverage currently comes from tracking and evaluation.
+- `pipeline-full` does not call the tracker; it runs ingest, detection, aggregation, and detection rendering.
+- ReID remains offline; it does not run inside BoT-SORT runtime.
+- `HOTA` is not implemented.
+- Mean position error during or immediately after occlusion is not yet established by the current benchmark because manual sparse localization GT has not been committed.

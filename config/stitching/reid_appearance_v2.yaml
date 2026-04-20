@@ -1,0 +1,59 @@
+stitch_name: reid_appearance_v2
+
+tracklets:
+  split_gap: 1
+  min_length: 1
+
+memory:
+  max_frame_gap: 900
+
+appearance:
+  backend: timm_dinov2
+  enabled: true
+  use_for_matching: true
+  model_name: vit_small_patch14_reg4_dinov2.lvd142m
+  checkpoint_path: /workspace/models/reid/vit_small_patch14_reg4_dinov2.lvd142m/model.safetensors
+  cache_dir: /workspace/models/reid/cache
+  allow_downloads: true
+  device: cpu
+  sample_frames: 4
+  batch_size: 8
+  crop_padding: 0.15
+  min_crop_size: 48
+  params: {}
+
+motion:
+  enabled: true
+  max_frame_gap: 900
+  max_center_distance: 300.0
+  base_region_radius: 100.0
+  growth_per_frame: 1.25
+
+bbox:
+  enabled: true
+  max_area_ratio: 2.5
+  max_aspect_ratio_delta: 0.5
+
+matching:
+  min_match_score: 0.55
+  min_score_margin: 0.05
+  min_mean_confidence: 0.55
+  min_tracklet_length: 20
+  appearance_weight: 0.35
+  short_gap_frames_threshold: 45
+  short_gap_min_appearance_similarity: 0.45
+  long_gap_frames_threshold: 180
+  long_gap_min_appearance_similarity: 0.60
+  require_appearance_for_short_gap: false
+  require_appearance_for_long_gap: true
+  winner_margin_threshold: 0.07
+  winner_margin_threshold_short: 0.05
+  winner_margin_threshold_long: 0.10
+  weights:
+    temporal: 0.15
+    motion: 0.2
+    center: 0.15
+    area: 0.2
+    aspect: 0.15
+    confidence: 0.15
+    appearance: 0.35

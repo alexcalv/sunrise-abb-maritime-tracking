@@ -1,2 +1,8 @@
 data
 outputs
+.idea/
+tmp_eval_frames/
+tmp_zip_branch/
+models/
+__pycache__/
+scripts

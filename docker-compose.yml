@@ -34,6 +34,7 @@ services:
       - ./models:/workspace/models
 
   runner:
+    build: .
     image: maritime-tracker:consolidated
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0

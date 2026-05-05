@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from pathlib import Path
+from typing import Any
 
 from broker.celery_app import celery_app
 from common.config import settings
 from evaluation.localization import evaluate_sparse_localization_dir
 from evaluation.mot import list_track_ids, merge_tracker_ids_to_gt, validate_gt_dir
 from evaluation.metrics import evaluate_mot_dir
+from fusion.multi_camera_job import load_multi_camera_job
+from fusion.multi_camera_runner import default_model_path, run_dual_camera_track_and_fuse
 from ingestion.ingestor import build_tasks
 from output.aggregator import aggregate_clip
 from output.render_video import render_annotated_video, render_video_from_mot
@@ -60,6 +64,128 @@ def cmd_track(args):
         name=args.name,
     )
     print(result)
+
+
+def _default_track_project_dir() -> Path:
+    # app/scripts/cli.py -> parents[2] is the workspace root (Docker: /workspace, local: repo root).
+    return Path(__file__).resolve().parents[2] / "outputs" / "track"
+
+
+def _default_tracker_yaml_path() -> str:
+    docker_path = Path("/workspace/config/trackers/botsort_maritime.yaml")
+    if docker_path.is_file():
+        return str(docker_path)
+    repo = Path(__file__).resolve().parents[2]
+    return str(repo / "config" / "trackers" / "botsort_maritime.yaml")
+
+
+def _register_track_multi_camera_parsers(sub: Any) -> None:
+    """Register both command names so Docker images and --help list them explicitly (no alias quirks)."""
+    help_text = (
+        "Two videos (any names/paths): run tracker on each, fuse global IDs, write MOT + overlay MP4s. "
+        "Use --job <config/multi_camera_job.example.json> or pass --main-video and --second-video. "
+        "Outputs: <project>/<run_name>/raw/, fusion/, videos/."
+    )
+    for cmd_name in ("track-multi-camera", "track-multi-unity-demo"):
+        sp = sub.add_parser(
+            cmd_name,
+            help=help_text if cmd_name == "track-multi-camera" else "Same as track-multi-camera (backward-compatible name).",
+        )
+        sp.add_argument(
+            "--job",
+            default=None,
+            help="JSON job file (see config/multi_camera_job.example.json). Relative paths resolve from the job file.",
+        )
+        sp.add_argument("--model", default=None, help="YOLO weights; overrides job; default: YOLO_MODEL or /workspace/models.")
+        sp.add_argument("--main-video", default=None, help="Reference camera video path (required if no --job).")
+        sp.add_argument("--second-video", default=None, help="Second camera video path (required if no --job).")
+        sp.add_argument("--tracker", default=None, help="Tracker YAML; default from job or repo config.")
+        sp.add_argument("--device", default=None, help="torch device; default from job or YOLO_DEVICE (use cpu in Docker on Mac).")
+        sp.add_argument(
+            "--project",
+            default=None,
+            help="Root folder for track outputs (default: <workspace>/outputs/track or job.project_root).",
+        )
+        sp.add_argument("--name", default=None, help="Run subdirectory under outputs/track (default: job.run_name or multi_cam_run).")
+        sp.add_argument("--image-width", type=int, default=None)
+        sp.add_argument("--image-height", type=int, default=None)
+        sp.add_argument(
+            "--max-center-distance-norm",
+            type=float,
+            default=None,
+            help="Max L2 distance between normalized centers to pair tracks across cameras.",
+        )
+        sp.add_argument("--camera-a-id", default=None, help="Fusion id for the reference stream (default camera_a or job).")
+        sp.add_argument("--camera-b-id", default=None)
+        sp.add_argument("--platform", default=None)
+        sp.add_argument("--label-mode", default=None, choices=["id", "full", "none"])
+        sp.add_argument(
+            "--fusion-mode",
+            default=None,
+            choices=["auto", "normalized_center", "rank_x"],
+            help=(
+                "Cross-camera pairing: auto (rank_x when equal counts, else normalized centers), "
+                "normalized_center (distance in normalized space per camera resolution), "
+                "rank_x (sort by center-x; only when counts match)."
+            ),
+        )
+        sp.set_defaults(func=cmd_track_multi_camera)
+
+
+def cmd_track_multi_camera(args):
+    job = load_multi_camera_job(Path(args.job)) if getattr(args, "job", None) else None
+    if job is None and (not args.main_video or not args.second_video):
+        raise SystemExit("Provide --job <job.json> or both --main-video and --second-video.")
+
+    main_video = Path(args.main_video) if args.main_video else job.main_video
+    second_video = Path(args.second_video) if args.second_video else job.second_video
+
+    model_path = args.model or (job.model_path if job else None) or default_model_path()
+    project_root = (
+        Path(args.project)
+        if args.project
+        else (job.project_root if job and job.project_root else _default_track_project_dir())
+    )
+    run_name = args.name or (job.run_name if job else None) or "multi_cam_run"
+    tracker_yaml = args.tracker or (job.tracker_yaml if job else None) or _default_tracker_yaml_path()
+    device = args.device or (job.device if job else None) or settings.yolo_device
+
+    image_width = args.image_width if args.image_width is not None else (job.image_width if job else 1280)
+    image_height = args.image_height if args.image_height is not None else (job.image_height if job else 720)
+    max_center_distance_norm = (
+        args.max_center_distance_norm
+        if args.max_center_distance_norm is not None
+        else (job.max_center_distance_norm if job else 0.55)
+    )
+    fusion_match_mode = args.fusion_mode or (job.fusion_match_mode if job else None) or "auto"
+    camera_a_id = args.camera_a_id or (job.camera_a_id if job else None) or "camera_a"
+    camera_b_id = args.camera_b_id or (job.camera_b_id if job else None) or "camera_b"
+    platform = args.platform or (job.platform if job else None) or "simulation"
+    label_mode = args.label_mode or (job.label_mode if job else None) or "id"
+
+    if not main_video.is_file():
+        raise FileNotFoundError(f"Main video not found: {main_video}")
+    if not second_video.is_file():
+        raise FileNotFoundError(f"Second camera video not found: {second_video}")
+
+    result = run_dual_camera_track_and_fuse(
+        model_path=model_path,
+        main_video=main_video,
+        second_video=second_video,
+        tracker_yaml=tracker_yaml,
+        device=device,
+        project_root=project_root,
+        run_name=run_name,
+        image_width=image_width,
+        image_height=image_height,
+        max_center_distance_norm=max_center_distance_norm,
+        camera_a_id=camera_a_id,
+        camera_b_id=camera_b_id,
+        platform=platform,
+        label_mode=label_mode,
+        fusion_match_mode=fusion_match_mode,
+    )
+    print(json.dumps(result, indent=2))
 
 
 def cmd_evaluate(args):
@@ -245,6 +371,8 @@ def build_parser():
     sp.add_argument("--project", default="/workspace/outputs/track")
     sp.add_argument("--name", default="botsort_run")
     sp.set_defaults(func=cmd_track)
+
+    _register_track_multi_camera_parsers(sub)
 
     sp = sub.add_parser("evaluate")
     sp.add_argument("--pred-dir", required=True)

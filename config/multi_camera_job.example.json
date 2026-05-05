@@ -1,0 +1,17 @@
+{
+  "main_video": "../data/videos/Scene0_MainCamera.mp4",
+  "second_video": "../data/videos/Scene0_SecondCamera.mp4",
+  "model_path": "../models/YOLOV26S_CUSTOM.pt",
+  "project_root": "../outputs/track",
+  "run_name": "scene0_fused",
+  "tracker_yaml": "../config/trackers/botsort_maritime.yaml",
+  "device": "cpu",
+  "image_width": 1280,
+  "image_height": 720,
+  "max_center_distance_norm": 0.55,
+  "fusion_match_mode": "auto",
+  "camera_a_id": "main_camera",
+  "camera_b_id": "second_camera",
+  "platform": "simulation",
+  "label_mode": "id"
+}

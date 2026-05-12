@@ -25,6 +25,9 @@ class MultiCameraJob:
     platform: str = "simulation"
     label_mode: str = "id"
     fusion_match_mode: str = "auto"
+    ais_file: Path | None = None
+    ais_fps: float | None = None
+    ais_time_offset_ms: int | None = None
 
 
 def _resolve_path(raw: str | Path, base_dir: Path) -> Path:
@@ -69,6 +72,18 @@ def load_multi_camera_job(path: Path) -> MultiCameraJob:
 
     model_raw = data.get("model_path")
     tracker_raw = data.get("tracker_yaml")
+    ais_raw = data.get("ais_file")
+
+    ais_path: Path | None = None
+    if ais_raw is not None:
+        if not str(ais_raw).strip():
+            raise ValueError(f"Job file {path}: ais_file must be a non-empty path when provided")
+        ais_path = _resolve_path(str(ais_raw), base_dir)
+        if not ais_path.is_file():
+            raise FileNotFoundError(f"AIS file from job not found: {ais_path}")
+
+    ais_fps = data.get("ais_fps")
+    ais_time_raw = data.get("ais_time_offset_ms")
 
     return MultiCameraJob(
         main_video=_resolve_path(req("main_video"), base_dir),
@@ -86,4 +101,7 @@ def load_multi_camera_job(path: Path) -> MultiCameraJob:
         platform=str(data.get("platform", "simulation")),
         label_mode=str(data.get("label_mode", "id")),
         fusion_match_mode=str(data.get("fusion_match_mode", "auto")),
+        ais_file=ais_path,
+        ais_fps=float(ais_fps) if ais_fps is not None else None,
+        ais_time_offset_ms=int(ais_time_raw) if ais_time_raw is not None else None,
     )

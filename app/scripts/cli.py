@@ -11,14 +11,21 @@ from common.config import settings
 from evaluation.localization import evaluate_sparse_localization_dir
 from evaluation.mot import list_track_ids, merge_tracker_ids_to_gt, validate_gt_dir
 from evaluation.metrics import evaluate_mot_dir
-from fusion.multi_camera_job import load_multi_camera_job
-from fusion.multi_camera_runner import default_model_path, run_dual_camera_track_and_fuse
 from ingestion.ingestor import build_tasks
 from output.aggregator import aggregate_clip
-from output.render_video import render_annotated_video, render_video_from_mot
-from stitching.batch import stitch_batch
-from stitching.runner import DEFAULT_CONFIG_PATH, stitch_tracks
-from tracking.tracker_runner import run_tracking
+
+
+# Default stitch config path (duplicates stitching.runner.DEFAULT_CONFIG_PATH to avoid importing stitch stack at CLI import time).
+_DEFAULT_STITCH_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "stitching" / "default.yaml"
+
+_VIDEO_EXTS_AIS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".gif"}
+
+
+def _get_celery_app():
+    """Import Celery only when pipeline commands need it (track/render work without celery installed)."""
+    from broker.celery_app import celery_app
+
+    return celery_app
 
 
 def wait_for_tasks(async_results, poll_seconds: float = 2.0) -> None:
@@ -39,12 +46,15 @@ def wait_for_tasks(async_results, poll_seconds: float = 2.0) -> None:
 
 
 def cmd_pipeline_ingest(args):
+    from ingestion.ingestor import build_tasks
+
     tasks = build_tasks(
         source=args.source,
         frames_dir=settings.frames_dir,
         batch_size=args.batch_size,
         frame_step=args.frame_step,
     )
+    celery_app = _get_celery_app()
     for task in tasks:
         celery_app.send_task("maritime.detect_batch", args=[task.model_dump()])
     print(f"Queued {len(tasks)} batches for clip {Path(args.source).stem}")
@@ -55,6 +65,8 @@ def cmd_pipeline_aggregate(args):
 
 
 def cmd_track(args):
+    from tracking.tracker_runner import run_tracking
+
     result = run_tracking(
         model_path=args.model,
         source=args.source,
@@ -63,6 +75,24 @@ def cmd_track(args):
         project=args.project,
         name=args.name,
     )
+    if getattr(args, "ais_file", None):
+        from ais.pipeline import merge_ais_into_run_summary, resolve_ais_track_layer, write_ais_sidecar
+
+        ais_p = Path(args.ais_file)
+        if not ais_p.is_file():
+            raise FileNotFoundError(f"AIS file not found: {ais_p}")
+        src = Path(args.source)
+        video_probe = src if src.is_file() and src.suffix.lower() in _VIDEO_EXTS_AIS else None
+        layer = resolve_ais_track_layer(
+            ais_p,
+            video_for_fps=video_probe,
+            fps_override=getattr(args, "ais_fps", None),
+            time_offset_ms_override=getattr(args, "ais_time_offset_ms", None),
+        )
+        out_root = Path(result["output_root"])
+        sidecar = write_ais_sidecar(out_root, layer, source_path=str(ais_p.resolve()))
+        merge_ais_into_run_summary(Path(result["run_summary"]), sidecar)
+        result["ais_layer_sidecar"] = str(sidecar)
     print(result)
 
 
@@ -129,10 +159,30 @@ def _register_track_multi_camera_parsers(sub: Any) -> None:
                 "rank_x (sort by center-x; only when counts match)."
             ),
         )
+        sp.add_argument(
+            "--ais-file",
+            default=None,
+            help="Optional AIS JSON (see config/ais_layer.example.json). Overrides job ais_file when set.",
+        )
+        sp.add_argument(
+            "--ais-fps",
+            type=float,
+            default=None,
+            help="Override video FPS for AIS sync mode timestamp_ms (else probe main video / job ais_fps).",
+        )
+        sp.add_argument(
+            "--ais-time-offset-ms",
+            type=int,
+            default=None,
+            help="Override AIS sync time_offset_ms for timestamp_ms mode (else JSON / job).",
+        )
         sp.set_defaults(func=cmd_track_multi_camera)
 
 
 def cmd_track_multi_camera(args):
+    from fusion.multi_camera_job import load_multi_camera_job
+    from fusion.multi_camera_runner import default_model_path, run_dual_camera_track_and_fuse
+
     job = load_multi_camera_job(Path(args.job)) if getattr(args, "job", None) else None
     if job is None and (not args.main_video or not args.second_video):
         raise SystemExit("Provide --job <job.json> or both --main-video and --second-video.")
@@ -163,6 +213,14 @@ def cmd_track_multi_camera(args):
     platform = args.platform or (job.platform if job else None) or "simulation"
     label_mode = args.label_mode or (job.label_mode if job else None) or "id"
 
+    ais_file: Path | None = Path(args.ais_file) if getattr(args, "ais_file", None) else None
+    if ais_file is None and job and job.ais_file:
+        ais_file = job.ais_file
+    ais_fps = args.ais_fps if args.ais_fps is not None else (job.ais_fps if job else None)
+    ais_time_offset_ms = (
+        args.ais_time_offset_ms if args.ais_time_offset_ms is not None else (job.ais_time_offset_ms if job else None)
+    )
+
     if not main_video.is_file():
         raise FileNotFoundError(f"Main video not found: {main_video}")
     if not second_video.is_file():
@@ -184,6 +242,9 @@ def cmd_track_multi_camera(args):
         platform=platform,
         label_mode=label_mode,
         fusion_match_mode=fusion_match_mode,
+        ais_file=ais_file,
+        ais_fps=ais_fps,
+        ais_time_offset_ms=ais_time_offset_ms,
     )
     print(json.dumps(result, indent=2))
 
@@ -244,6 +305,8 @@ def cmd_gt_merge_ids(args):
 
 
 def cmd_stitch_tracks(args):
+    from stitching.runner import stitch_tracks
+
     result = stitch_tracks(
         pred_dir=args.pred_dir,
         output_dir=args.output_dir,
@@ -255,6 +318,8 @@ def cmd_stitch_tracks(args):
 
 
 def cmd_stitch_batch(args):
+    from stitching.batch import stitch_batch
+
     result = stitch_batch(
         runs_root=args.runs_root,
         batch_dir=args.batch_dir,
@@ -265,6 +330,8 @@ def cmd_stitch_batch(args):
 
 
 def cmd_pipeline_full(args):
+    from ingestion.ingestor import build_tasks
+
     clip_id = Path(args.source).stem
 
     tasks = build_tasks(
@@ -274,6 +341,7 @@ def cmd_pipeline_full(args):
         frame_step=args.frame_step,
     )
 
+    celery_app = _get_celery_app()
     async_results = []
     for task in tasks:
         r = celery_app.send_task("maritime.detect_batch", args=[task.model_dump()])
@@ -289,6 +357,8 @@ def cmd_pipeline_full(args):
         clip_id,
     )
     print(aggregate_result)
+
+    from output.render_video import render_annotated_video
 
     render_result = render_annotated_video(
         frames_dir=settings.frames_dir,
@@ -310,6 +380,8 @@ def _resolve_render_label_mode(args, default_mode: str) -> str:
 
 
 def cmd_render_video(args):
+    from output.render_video import render_annotated_video, render_video_from_mot
+
     if args.clip_id and (args.source or args.mot_file):
         raise ValueError("render-video accepts either --clip-id or --source with --mot-file, not both")
 
@@ -370,6 +442,23 @@ def build_parser():
     sp.add_argument("--device", default=settings.yolo_device)
     sp.add_argument("--project", default="/workspace/outputs/track")
     sp.add_argument("--name", default="botsort_run")
+    sp.add_argument(
+        "--ais-file",
+        default=None,
+        help="Optional AIS JSON sidecar source (see config/ais_layer.example.json). Does not change MOT without a consumer.",
+    )
+    sp.add_argument(
+        "--ais-fps",
+        type=float,
+        default=None,
+        help="FPS for AIS timestamp_ms sync when source is not a video with FPS metadata.",
+    )
+    sp.add_argument(
+        "--ais-time-offset-ms",
+        type=int,
+        default=None,
+        help="Override AIS JSON time_offset_ms for timestamp_ms sync.",
+    )
     sp.set_defaults(func=cmd_track)
 
     _register_track_multi_camera_parsers(sub)
@@ -413,14 +502,14 @@ def build_parser():
     sp.add_argument("--pred-dir", required=True)
     sp.add_argument("--output-dir")
     sp.add_argument("--run-summary")
-    sp.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    sp.add_argument("--config", default=str(_DEFAULT_STITCH_CONFIG_PATH))
     sp.add_argument("--name")
     sp.set_defaults(func=cmd_stitch_tracks)
 
     sp = sub.add_parser("stitch-batch")
     sp.add_argument("--runs-root", default="/workspace/outputs/track")
     sp.add_argument("--batch-dir")
-    sp.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    sp.add_argument("--config", default=str(_DEFAULT_STITCH_CONFIG_PATH))
     sp.add_argument("--name")
     sp.set_defaults(func=cmd_stitch_batch)
     

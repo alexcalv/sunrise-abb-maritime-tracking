@@ -222,6 +222,9 @@ def run_dual_camera_track_and_fuse(
     platform: str = "simulation",
     label_mode: str = "id",
     fusion_match_mode: str = "auto",
+    ais_file: Path | str | None = None,
+    ais_fps: float | None = None,
+    ais_time_offset_ms: int | None = None,
 ) -> dict[str, Any]:
     """
     Run the tracker on two videos, fuse global identities, write fused MOT + overlay videos.
@@ -307,6 +310,23 @@ def run_dual_camera_track_and_fuse(
     summary_path = fusion_dir / "fusion_mot_pair_summary.json"
     summary_path.write_text(json.dumps(fusion_summary, indent=2), encoding="utf-8")
 
+    ais_sidecar: Path | None = None
+    if ais_file is not None:
+        from ais.pipeline import merge_ais_into_fusion_summary, resolve_ais_track_layer, write_ais_sidecar
+
+        ap = Path(str(ais_file))
+        if not ap.is_file():
+            raise FileNotFoundError(f"AIS file not found: {ap}")
+        layer = resolve_ais_track_layer(
+            ap,
+            video_for_fps=main_video,
+            fps_override=ais_fps,
+            time_offset_ms_override=ais_time_offset_ms,
+        )
+        ais_sidecar = write_ais_sidecar(fusion_dir, layer, source_path=str(ap.resolve()))
+        merge_ais_into_fusion_summary(summary_path, ais_sidecar)
+        fusion_summary["ais_layer"] = {"enabled": True, "sidecar": str(ais_sidecar)}
+
     out_main_mp4 = videos_dir / f"{main_video.stem}_fused_overlay.mp4"
     out_second_mp4 = videos_dir / f"{second_video.stem}_fused_overlay.mp4"
     render_main = render_video_from_mot(
@@ -324,7 +344,7 @@ def run_dual_camera_track_and_fuse(
         label_mode=label_mode,
     )
 
-    return {
+    out: dict[str, Any] = {
         "project_root": str(project_root),
         "run_name": run_name,
         "output_layout": {
@@ -344,3 +364,6 @@ def run_dual_camera_track_and_fuse(
         "fusion_match_mode": fusion_match_mode,
         "image_size_by_camera": {k: [v[0], v[1]] for k, v in image_size_by_camera.items()},
     }
+    if ais_sidecar is not None:
+        out["ais_layer_sidecar"] = str(ais_sidecar)
+    return out

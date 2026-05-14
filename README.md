@@ -88,6 +88,25 @@ Main commands:
 | `stitch-batch` | stitch multiple runs and write a compact batch summary |
 | `evaluate-localization` | evaluate sparse manual localization annotations |
 
+### Unit tests in Docker
+
+The image `ENTRYPOINT` is `python -m scripts.cli`, so extra words after `runner` are parsed as CLI subcommands. **`docker compose run --rm runner python -m unittest …` fails** because `python` is not a valid subcommand.
+
+Use either the dedicated **`test`** service (recommended):
+
+```bash
+docker compose run --rm test
+```
+
+Or override the entrypoint on **`runner`**:
+
+```bash
+docker compose run --rm --entrypoint python runner \
+  -m unittest discover -s /workspace/tests -p 'test*.py' -v
+```
+
+The `runner` service mounts `./tests` to `/workspace/tests` so discovery can see your host test files.
+
 ## Representative Commands
 
 ### BoT-SORT on a single clip

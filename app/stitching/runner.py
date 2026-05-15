@@ -6,6 +6,8 @@ from pathlib import Path
 from shutil import copy2
 from typing import Any
 
+from ais.types import AisConfig
+from colreg.types import ColregConfig
 from evaluation.mot import load_mot_rows, write_mot_rows
 from stitching.appearance import build_tracklet_appearance
 from stitching.matcher import match_tracklets
@@ -70,6 +72,8 @@ def _load_stitch_config(config_path: str | None) -> StitchConfig:
         motion=MotionConfig(**(raw.get("motion") or {})),
         bbox=BBoxConfig(**(raw.get("bbox") or {})),
         matching=matching_config,
+        colreg=ColregConfig(**(raw.get("colreg") or {})),
+        ais=AisConfig(**(raw.get("ais") or {})),
     )
 
 

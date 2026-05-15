@@ -5,5 +5,8 @@ tmp_eval_frames/
 tmp_zip_branch/
 models/
 __pycache__/
-scripts
+scripts/*
+!scripts/cli.py
+!scripts/run_detection.py
 .DS_Store
+runs

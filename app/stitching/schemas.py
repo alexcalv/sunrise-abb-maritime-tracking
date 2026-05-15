@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from ais.types import AisConfig
+from colreg.types import ColregConfig
+
 
 @dataclass
 class TrackletConfig:
@@ -79,6 +82,17 @@ class MatchingConfig:
     winner_margin_threshold: float | None = None
     winner_margin_threshold_short: float | None = None
     winner_margin_threshold_long: float | None = None
+    chain_control_enabled: bool = True
+    chain_control_recent_merge_window: int = 180
+    chain_control_score_bonus: float = 0.12
+    chain_control_chained_score_bonus: float = 0.08
+    chain_control_repeated_score_bonus: float = 0.05
+    chain_control_margin_bonus: float = 0.05
+    chain_control_min_appearance_similarity: float | None = 0.72
+    short_gap_gate_enabled: bool = True
+    short_gap_gate_max_gap_frames: int = 5
+    short_gap_gate_min_score: float = 0.8
+    short_gap_gate_min_margin: float = 0.12
     weights: MatchingWeights = field(default_factory=MatchingWeights)
 
 
@@ -91,6 +105,8 @@ class StitchConfig:
     motion: MotionConfig = field(default_factory=MotionConfig)
     bbox: BBoxConfig = field(default_factory=BBoxConfig)
     matching: MatchingConfig = field(default_factory=MatchingConfig)
+    colreg: ColregConfig = field(default_factory=ColregConfig)
+    ais: AisConfig = field(default_factory=AisConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

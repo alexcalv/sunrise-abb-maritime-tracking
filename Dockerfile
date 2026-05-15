@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY app /workspace/app
 COPY config /workspace/config
+COPY scripts /workspace/scripts
 
 ENV PYTHONPATH=/workspace/app \
     PYTHONUNBUFFERED=1 \

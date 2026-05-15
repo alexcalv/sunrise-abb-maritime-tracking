@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from pathlib import Path
 
+from ais.checks import run_checks as run_ais_checks
 from broker.celery_app import celery_app
+from colreg.checks import run_checks as run_colreg_checks
 from common.config import settings
 from evaluation.localization import evaluate_sparse_localization_dir
 from evaluation.mot import list_track_ids, merge_tracker_ids_to_gt, validate_gt_dir
@@ -12,7 +15,9 @@ from evaluation.metrics import evaluate_mot_dir
 from ingestion.ingestor import build_tasks
 from output.aggregator import aggregate_clip
 from output.render_video import render_annotated_video, render_video_from_mot
+from reid.regression import check_regression
 from stitching.batch import stitch_batch
+from stitching.replay import replay_stitch_tracks
 from stitching.runner import DEFAULT_CONFIG_PATH, stitch_tracks
 from tracking.tracker_runner import run_tracking
 
@@ -51,6 +56,8 @@ def cmd_pipeline_aggregate(args):
 
 
 def cmd_track(args):
+    if args.live_reid and args.live_reid_in_loop:
+        raise ValueError("--live-reid and --live-reid-in-loop cannot be used together")
     result = run_tracking(
         model_path=args.model,
         source=args.source,
@@ -58,6 +65,18 @@ def cmd_track(args):
         device=args.device,
         project=args.project,
         name=args.name,
+        conf=args.conf,
+        imgsz=args.imgsz,
+        live_reid=args.live_reid,
+        live_reid_in_loop=args.live_reid_in_loop,
+        live_reid_config=args.live_reid_config,
+        confirmation_observations=args.confirmation_observations,
+        colreg_diagnostics=args.colreg_diagnostics,
+        colreg_scoring_experiment=args.colreg_scoring_experiment,
+        ais_diagnostics=args.ais_diagnostics,
+        ais_file=args.ais_file,
+        ais_video_start_time=args.ais_video_start_time,
+        ais_affine_matrix=args.ais_affine_matrix,
     )
     print(result)
 
@@ -138,6 +157,50 @@ def cmd_stitch_batch(args):
     print(result)
 
 
+def cmd_replay_stitch(args):
+    result = replay_stitch_tracks(
+        pred_dir=args.pred_dir,
+        output_dir=args.output_dir,
+        run_summary_path=args.run_summary,
+        config_path=args.config,
+        stitch_name=args.name,
+    )
+    print(result)
+
+
+def cmd_reid_regression(args):
+    summary = check_regression(
+        cut28_mot=args.cut28_mot,
+        cut28_video=args.cut28_video,
+        cut29_mot=args.cut29_mot,
+        cut29_video=args.cut29_video,
+        config=args.config,
+        output_dir=args.output_dir,
+        confirmation_observations=args.confirmation_observations,
+        colreg_diagnostics=args.colreg_diagnostics,
+    )
+    print(json.dumps(summary, indent=2))
+    if not summary["passed"]:
+        raise SystemExit(1)
+
+
+def cmd_self_check(args):
+    run_colreg = bool(args.colreg) or not bool(args.ais)
+    run_ais = bool(args.ais) or not bool(args.colreg)
+    checks = {}
+    if run_colreg:
+        checks["colreg"] = run_colreg_checks()
+    if run_ais:
+        checks["ais"] = run_ais_checks()
+    summary = {
+        "passed": all(bool(payload.get("passed")) for payload in checks.values()),
+        "checks": checks,
+    }
+    print(json.dumps(summary, indent=2))
+    if not summary["passed"]:
+        raise SystemExit(1)
+
+
 def cmd_pipeline_full(args):
     clip_id = Path(args.source).stem
 
@@ -195,6 +258,7 @@ def cmd_render_video(args):
             clip_id=args.clip_id,
             fps=args.fps,
             label_mode=_resolve_render_label_mode(args, default_mode="full"),
+            video_codec=args.video_codec,
         )
     else:
         if not args.source or not args.mot_file:
@@ -205,6 +269,9 @@ def cmd_render_video(args):
             output_video_path=args.output,
             fps=args.fps,
             label_mode=_resolve_render_label_mode(args, default_mode="id"),
+            occlusion_predictions_path=args.occlusion_predictions,
+            side_by_side=args.side_by_side_demo,
+            video_codec=args.video_codec,
         )
     print(result)
 
@@ -244,6 +311,64 @@ def build_parser():
     sp.add_argument("--device", default=settings.yolo_device)
     sp.add_argument("--project", default="/workspace/outputs/track")
     sp.add_argument("--name", default="botsort_run")
+    sp.add_argument("--conf", type=float, help="Optional detector confidence threshold passed to Ultralytics tracking.")
+    sp.add_argument("--imgsz", type=int, help="Optional image size passed to Ultralytics tracking.")
+    sp.add_argument(
+        "--live-reid",
+        action="store_true",
+        help=(
+            "Experimental: after raw tracker MOT is written, also run bounded-latency "
+            "ReID into <run>/live_reid. Raw MOT is preserved; this is not in-loop tracker integration."
+        ),
+    )
+    sp.add_argument(
+        "--live-reid-in-loop",
+        action="store_true",
+        help=(
+            "Experimental: run bounded-latency live ReID inside the tracking frame loop and write "
+            "<run>/live_reid_in_loop while preserving raw MOT. This is not zero-latency production "
+            "integration. Do not combine with --live-reid."
+        ),
+    )
+    sp.add_argument(
+        "--live-reid-config",
+        default=str(DEFAULT_CONFIG_PATH),
+        help="Config used by experimental --live-reid or --live-reid-in-loop.",
+    )
+    sp.add_argument(
+        "--confirmation-observations",
+        type=int,
+        default=10,
+        help="Bounded-latency observation buffer used by live ReID modes. Default: 10.",
+    )
+    sp.add_argument(
+        "--colreg-diagnostics",
+        action="store_true",
+        help=(
+            "Reporting-only COLREG diagnostics for live ReID candidate reports. "
+            "Does not affect matching scores, gates, remaps, or MOT output."
+        ),
+    )
+    sp.add_argument(
+        "--colreg-scoring-experiment",
+        action="store_true",
+        help=(
+            "Experimental and disabled by default: allow ultra-narrow COLREG tie-break scoring "
+            "inside live ReID candidate ranking. Implies COLREG diagnostics and must be combined "
+            "with --live-reid or --live-reid-in-loop."
+        ),
+    )
+    sp.add_argument(
+        "--ais-diagnostics",
+        action="store_true",
+        help=(
+            "Reporting-only AIS fields for live ReID candidate reports. Does not affect scores, "
+            "gates, remaps, canonical IDs, tracker decisions, or MOT output; missing AIS is neutral."
+        ),
+    )
+    sp.add_argument("--ais-file", help="Optional AIS CSV/JSON file used only with --ais-diagnostics.")
+    sp.add_argument("--ais-video-start-time", help="Optional video start timestamp for AIS frame alignment.")
+    sp.add_argument("--ais-affine-matrix", help="Optional 2x3 or 3x3 lon/lat-to-image affine matrix for AIS diagnostics.")
     sp.set_defaults(func=cmd_track)
 
     sp = sub.add_parser("evaluate")
@@ -281,7 +406,7 @@ def build_parser():
     sp.add_argument("--list-ids", action="store_true")
     sp.set_defaults(func=cmd_gt_merge_ids)
 
-    sp = sub.add_parser("stitch-tracks")
+    sp = sub.add_parser("stitch-tracks", description="Legacy/reference offline stitcher.")
     sp.add_argument("--pred-dir", required=True)
     sp.add_argument("--output-dir")
     sp.add_argument("--run-summary")
@@ -289,13 +414,47 @@ def build_parser():
     sp.add_argument("--name")
     sp.set_defaults(func=cmd_stitch_tracks)
 
-    sp = sub.add_parser("stitch-batch")
+    sp = sub.add_parser("stitch-batch", description="Legacy/reference offline batch stitcher.")
     sp.add_argument("--runs-root", default="/workspace/outputs/track")
     sp.add_argument("--batch-dir")
     sp.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
     sp.add_argument("--name")
     sp.set_defaults(func=cmd_stitch_batch)
-    
+
+    sp = sub.add_parser("replay-stitch", description="Legacy/reference replay-style stitcher.")
+    sp.add_argument("--pred-dir", required=True)
+    sp.add_argument("--output-dir")
+    sp.add_argument("--run-summary")
+    sp.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    sp.add_argument("--name")
+    sp.set_defaults(func=cmd_replay_stitch)
+
+    sp = sub.add_parser(
+        "reid-regression",
+        description="Run the saved-MOT ReID v1 regression used for review and CI.",
+    )
+    sp.add_argument("--cut28-mot")
+    sp.add_argument("--cut28-video")
+    sp.add_argument("--cut29-mot")
+    sp.add_argument("--cut29-video")
+    sp.add_argument("--config", help="Optional ReID config applied to both regression cases.")
+    sp.add_argument("--output-dir", required=True)
+    sp.add_argument("--confirmation-observations", type=int, default=10)
+    sp.add_argument(
+        "--colreg-diagnostics",
+        action="store_true",
+        help="Reporting-only COLREG fields during the regression; decisions and MOT rows must remain unchanged.",
+    )
+    sp.set_defaults(func=cmd_reid_regression)
+
+    sp = sub.add_parser(
+        "self-check",
+        description="Run lightweight synthetic checks for diagnostic COLREG and AIS utilities.",
+    )
+    sp.add_argument("--colreg", action="store_true", help="Run only the COLREG synthetic checks.")
+    sp.add_argument("--ais", action="store_true", help="Run only the AIS synthetic checks.")
+    sp.set_defaults(func=cmd_self_check)
+
     sp = sub.add_parser("render-video")
     sp.add_argument("--clip-id")
     sp.add_argument("--source")
@@ -304,6 +463,14 @@ def build_parser():
     sp.add_argument("--fps", type=float)
     sp.add_argument("--label-mode", choices=["id", "full", "none"])
     sp.add_argument("--no-labels", action="store_true")
+    sp.add_argument("--occlusion-predictions", help="Optional reporting-only occlusion prediction JSON overlay.")
+    sp.add_argument("--side-by-side-demo", action="store_true", help="Render original and annotated video side by side.")
+    sp.add_argument(
+        "--video-codec",
+        choices=["auto", "mp4v", "h264"],
+        default="auto",
+        help="Video codec for rendered MP4s. auto prefers Windows-friendly H.264 and falls back clearly.",
+    )
     sp.set_defaults(func=cmd_render_video)
 
     return p

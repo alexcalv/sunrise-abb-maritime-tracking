@@ -1,4 +1,3 @@
-from stitching.batch import stitch_batch
-from stitching.runner import stitch_tracks
+"""Offline track stitching package (import runner/batch submodules directly to avoid heavy deps at import time)."""
 
 __all__ = ["stitch_tracks", "stitch_batch"]

@@ -47,6 +47,7 @@ services:
     depends_on:
       - redis
     volumes:
+      - ./app:/workspace/app
       - ./data:/workspace/data
       - ./outputs:/workspace/outputs
       - ./config:/workspace/config
@@ -59,5 +60,8 @@ services:
     image: maritime-tracker:consolidated
     entrypoint: ["python", "-m", "unittest"]
     command: ["discover", "-s", "/workspace/tests", "-p", "test*.py", "-v"]
+    environment:
+      PYTHONPATH: /workspace/app
     volumes:
+      - ./app:/workspace/app
       - ./tests:/workspace/tests

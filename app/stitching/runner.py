@@ -10,6 +10,7 @@ from evaluation.mot import load_mot_rows, write_mot_rows
 from stitching.appearance import build_tracklet_appearance
 from stitching.matcher import match_tracklets
 from stitching.schemas import (
+    AisConfig,
     AppearanceConfig,
     BBoxConfig,
     MatchingConfig,
@@ -62,6 +63,10 @@ def _load_stitch_config(config_path: str | None) -> StitchConfig:
     else:
         matching_config.weights.appearance = float(matching_config.appearance_weight)
 
+    ais_raw = dict(raw.get("ais") or {})
+    if ais_raw.get("enabled") is None:
+        ais_raw["enabled"] = False
+
     return StitchConfig(
         stitch_name=str(raw.get("stitch_name", "noop_v1")),
         tracklets=TrackletConfig(**(raw.get("tracklets") or {})),
@@ -70,6 +75,7 @@ def _load_stitch_config(config_path: str | None) -> StitchConfig:
         motion=MotionConfig(**(raw.get("motion") or {})),
         bbox=BBoxConfig(**(raw.get("bbox") or {})),
         matching=matching_config,
+        ais=AisConfig(**ais_raw),
     )
 
 
@@ -205,6 +211,8 @@ def stitch_tracks(
     run_summary_path: str | None = None,
     config_path: str | None = None,
     stitch_name: str | None = None,
+    ais_file: str | None = None,
+    ais_fps: float | None = None,
 ) -> dict[str, Any]:
     pred_root = Path(pred_dir)
     if not pred_root.exists():
@@ -213,6 +221,11 @@ def stitch_tracks(
     config = _load_stitch_config(config_path)
     if stitch_name:
         config.stitch_name = stitch_name
+    if ais_file:
+        config.ais.enabled = True
+        config.ais.file_path = str(ais_file)
+    if ais_fps is not None:
+        config.ais.video_fps = float(ais_fps)
 
     output_root = Path(output_dir) if output_dir else pred_root.parent / "stitched" / config.stitch_name
     mot_dir = output_root / "mot"
@@ -220,6 +233,12 @@ def stitch_tracks(
 
     input_run_summary_path = _resolve_run_summary_path(pred_root, run_summary_path)
     input_run_summary = _load_run_summary(input_run_summary_path)
+
+    if config.ais.enabled and (config.ais.video_fps is None or config.ais.video_fps <= 0):
+        if input_run_summary is not None:
+            inferred = input_run_summary.get("effective_fps")
+            if inferred is not None and float(inferred) > 0:
+                config.ais.video_fps = float(inferred)
 
     mot_files = sorted(pred_root.glob("*.txt"))
     if not mot_files:
@@ -233,6 +252,26 @@ def stitch_tracks(
     source_path = None
     if input_run_summary is not None:
         source_path = input_run_summary.get("source")
+
+    global_max_frame = 0
+    if config.ais.enabled:
+        for mot_path in mot_files:
+            rows = load_mot_rows(mot_path)
+            if rows:
+                global_max_frame = max(global_max_frame, max(int(r["frame"]) for r in rows))
+
+    aligned_clip = None
+    mmsi_assignments: dict[str, int | None] = {}
+    if config.ais.enabled:
+        from ais.stitching_bridge import load_aligned_clip_for_stitch, stamp_tracklet_mmsi
+
+        aligned_clip = load_aligned_clip_for_stitch(
+            config,
+            max_frame=global_max_frame or 1,
+            ais_file_override=ais_file,
+        )
+        if aligned_clip is None:
+            warnings.append("AIS enabled but aligned clip could not be built; AIS scoring skipped.")
 
     for mot_path in mot_files:
         rows = load_mot_rows(mot_path)
@@ -253,10 +292,21 @@ def stitch_tracks(
         )
         warnings.extend(appearance_warnings)
 
+        if aligned_clip is not None:
+            from ais.stitching_bridge import stamp_tracklet_mmsi
+
+            mmsi_assignments = stamp_tracklet_mmsi(
+                tracklets,
+                aligned_clip,
+                max_distance_px=config.ais.max_distance_px,
+            )
+
         matched_tracklets, decisions, identity_map, matches_applied = match_tracklets(
             tracklets,
             config,
             appearance_embeddings=appearance_embeddings,
+            aligned_clip=aligned_clip,
+            mmsi_assignments=mmsi_assignments,
         )
 
         remapped_rows = []

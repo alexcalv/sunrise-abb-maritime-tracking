@@ -105,7 +105,11 @@ docker compose run --rm --entrypoint python runner \
   -m unittest discover -s /workspace/tests -p 'test*.py' -v
 ```
 
-The `runner` service mounts `./tests` to `/workspace/tests` so discovery can see your host test files.
+The `test` and `runner` services mount `./app` and `./tests` from the host, so you do not need to rebuild the image after every code change. Rebuild only when `requirements.txt` or the Dockerfile changes:
+
+```bash
+docker compose build test
+```
 
 ## Representative Commands
 

@@ -313,6 +313,8 @@ def cmd_stitch_tracks(args):
         run_summary_path=args.run_summary,
         config_path=args.config,
         stitch_name=args.name,
+        ais_file=getattr(args, "ais_file", None),
+        ais_fps=getattr(args, "ais_fps", None),
     )
     print(result)
 
@@ -504,6 +506,17 @@ def build_parser():
     sp.add_argument("--run-summary")
     sp.add_argument("--config", default=str(_DEFAULT_STITCH_CONFIG_PATH))
     sp.add_argument("--name")
+    sp.add_argument(
+        "--ais-file",
+        default=None,
+        help="Optional AIS CSV/JSON; enables stitching AIS scoring (see config stitching ais: weights).",
+    )
+    sp.add_argument(
+        "--ais-fps",
+        type=float,
+        default=None,
+        help="Video FPS for AIS alignment (else run_summary effective_fps when available).",
+    )
     sp.set_defaults(func=cmd_stitch_tracks)
 
     sp = sub.add_parser("stitch-batch")

@@ -6,7 +6,13 @@ from copy import deepcopy
 from pathlib import Path
 
 from evaluation.mot import write_mot_rows
+from tracking.occlusion_geometry import (
+    build_motion_corridor_prediction,
+    estimate_motion_state,
+    estimate_occlusion_relationship,
+)
 from tracking.prediction import build_occlusion_prediction
+from tracking.visual_continuation import estimate_visual_continuation, update_visual_templates
 from ultralytics import YOLO
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -106,6 +112,84 @@ def _history_rows(
     return rows
 
 
+def _xyxy_iou(left: list[float], right: list[float]) -> float:
+    lx1, ly1, lx2, ly2 = left
+    rx1, ry1, rx2, ry2 = right
+    ix1 = max(lx1, rx1)
+    iy1 = max(ly1, ry1)
+    ix2 = min(lx2, rx2)
+    iy2 = min(ly2, ry2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    intersection = iw * ih
+    left_area = max(0.0, lx2 - lx1) * max(0.0, ly2 - ly1)
+    right_area = max(0.0, rx2 - rx1) * max(0.0, ry2 - ry1)
+    union = left_area + right_area - intersection
+    return 0.0 if union <= 0.0 else intersection / union
+
+
+def _detections_from_boxes(boxes, source_name: str, confidence_threshold: float) -> list[dict]:
+    if boxes is None or boxes.xyxy is None or len(boxes) == 0:
+        return []
+    xyxy_boxes = boxes.xyxy.cpu().tolist()
+    confidences = boxes.conf.cpu().tolist() if boxes.conf is not None else [1.0] * len(xyxy_boxes)
+    detections = []
+    for xyxy, confidence in zip(xyxy_boxes, confidences):
+        conf_value = float(confidence)
+        if conf_value < float(confidence_threshold):
+            continue
+        detections.append(
+            {
+                "xyxy": [float(value) for value in xyxy],
+                "confidence": conf_value,
+                "source": source_name,
+                "class_id": 0,
+            }
+        )
+    return detections
+
+
+def _union_nms(detections: list[dict], iou_threshold: float) -> list[dict]:
+    ordered = sorted(detections, key=lambda item: float(item["confidence"]), reverse=True)
+    fused: list[dict] = []
+    used = [False] * len(ordered)
+    for index, detection in enumerate(ordered):
+        if used[index]:
+            continue
+        sources = {str(detection["source"])}
+        duplicate_count = 0
+        for other_index in range(index + 1, len(ordered)):
+            if used[other_index]:
+                continue
+            if _xyxy_iou(detection["xyxy"], ordered[other_index]["xyxy"]) >= float(iou_threshold):
+                used[other_index] = True
+                duplicate_count += 1
+                sources.add(str(ordered[other_index]["source"]))
+        item = dict(detection)
+        item["sources"] = sorted(sources)
+        item["duplicate_count"] = duplicate_count
+        fused.append(item)
+    return fused
+
+
+def _update_fusion_stats(
+    stats: dict,
+    primary_detections: list[dict],
+    secondary_detections: list[dict],
+    fused_detections: list[dict],
+) -> None:
+    stats["primary_detection_count"] += len(primary_detections)
+    stats["secondary_detection_count"] += len(secondary_detections)
+    stats["fused_detection_count"] += len(fused_detections)
+    stats["duplicate_removed_count"] += max(0, len(primary_detections) + len(secondary_detections) - len(fused_detections))
+    stats["secondary_only_detection_count"] += sum(1 for detection in fused_detections if detection.get("sources") == ["secondary"])
+    stats["primary_only_detection_count"] += sum(1 for detection in fused_detections if detection.get("sources") == ["primary"])
+    stats["mixed_detection_count"] += sum(1 for detection in fused_detections if set(detection.get("sources") or []) == {"primary", "secondary"})
+    stats["_primary_confidence_sum"] += sum(float(detection["confidence"]) for detection in primary_detections)
+    stats["_secondary_confidence_sum"] += sum(float(detection["confidence"]) for detection in secondary_detections)
+    stats["_fused_confidence_sum"] += sum(float(detection["confidence"]) for detection in fused_detections)
+
+
 def _decision_context(decision: dict, *, include_colreg: bool, include_ais: bool) -> dict:
     context: dict[str, object] = {
         "new_raw_track_id": int(decision["new_source_track_id"]),
@@ -163,13 +247,28 @@ def run_tracking(
     ais_file: str | None = None,
     ais_video_start_time: str | None = None,
     ais_affine_matrix: str | None = None,
+    visual_continuation: bool = False,
+    continuation_search_radius: int = 64,
+    continuation_threshold: float = 0.45,
+    continuation_max_gap: int = 60,
+    paired_occlusion_prediction: bool = False,
+    secondary_model: str | None = None,
+    detector_fusion: bool = False,
+    fusion_iou_threshold: float = 0.55,
+    fusion_confidence_threshold: float = 0.25,
+    fusion_mode: str = "union_nms",
 ):
     if live_reid and live_reid_in_loop:
         raise ValueError("--live-reid and --live-reid-in-loop are mutually exclusive")
     if colreg_scoring_experiment and not (live_reid or live_reid_in_loop):
         raise ValueError("--colreg-scoring-experiment requires --live-reid or --live-reid-in-loop")
+    if detector_fusion and not secondary_model:
+        raise ValueError("--detector-fusion requires --secondary-model")
+    if detector_fusion and fusion_mode != "union_nms":
+        raise ValueError("Only --fusion-mode union_nms is supported")
 
     model = YOLO(model_path)
+    secondary_detector = YOLO(secondary_model) if detector_fusion and secondary_model else None
     started_at = time.time()
 
     online_mapper_cls = None
@@ -223,7 +322,33 @@ def run_tracking(
     occlusion_last_seen: dict[str, dict[int, int]] = {}
     occlusion_reappearances: dict[str, dict[int, dict[str, int]]] = {}
     occlusion_predictions: dict[str, list[dict]] = {}
+    occlusion_visual_templates: dict[str, dict[int, object]] = {}
     max_prediction_gap = max(30, int(confirmation_observations) * 6)
+    fusion_stats = {
+        "enabled": bool(detector_fusion),
+        "primary_model": model_path,
+        "secondary_model": secondary_model,
+        "fusion_mode": fusion_mode,
+        "fusion_iou_threshold": float(fusion_iou_threshold),
+        "fusion_confidence_threshold": float(fusion_confidence_threshold),
+        "applied_to_tracker": False,
+        "true_pre_tracker_fusion_supported": False,
+        "note": (
+            "Experimental detector fusion diagnostics only. The current Ultralytics model.track loop "
+            "does not safely accept externally fused detections, so MOT/ReID output remains primary-model tracking."
+        ),
+        "frames_evaluated": 0,
+        "primary_detection_count": 0,
+        "secondary_detection_count": 0,
+        "fused_detection_count": 0,
+        "duplicate_removed_count": 0,
+        "secondary_only_detection_count": 0,
+        "primary_only_detection_count": 0,
+        "mixed_detection_count": 0,
+        "_primary_confidence_sum": 0.0,
+        "_secondary_confidence_sum": 0.0,
+        "_fused_confidence_sum": 0.0,
+    }
 
     for result in results:
         if output_root is None:
@@ -243,12 +368,13 @@ def run_tracking(
         def mapper_for_sequence():
             return in_loop_mappers.get(seq_name)
 
-        def record_occlusion_predictions(current_rows: list[dict]) -> None:
+        def record_occlusion_predictions(current_rows: list[dict], frame_image=None) -> None:
             if not live_reid_in_loop:
                 return
             histories = occlusion_histories.setdefault(seq_name, {})
             last_seen = occlusion_last_seen.setdefault(seq_name, {})
             reappearances = occlusion_reappearances.setdefault(seq_name, {})
+            visual_templates = occlusion_visual_templates.setdefault(seq_name, {})
             seen_ids = {int(row["id"]) for row in current_rows}
             mapper = mapper_for_sequence()
 
@@ -265,6 +391,9 @@ def run_tracking(
                 history.append(dict(row))
                 del history[:-20]
                 last_seen[raw_id] = int(frame_index)
+
+            if visual_continuation:
+                update_visual_templates(frame_image, current_rows, visual_templates)
 
             for raw_id, history in sorted(histories.items()):
                 if raw_id in seen_ids:
@@ -303,6 +432,74 @@ def run_tracking(
                         "same_raw_id_reappeared": False,
                     }
                 )
+                if paired_occlusion_prediction:
+                    hidden_state = estimate_motion_state(history)
+                    best_pair: dict | None = None
+                    best_occluder_state = None
+                    best_occluder_row = None
+                    if hidden_state is not None:
+                        for other_row in current_rows:
+                            other_id = int(other_row["id"])
+                            if other_id == raw_id:
+                                continue
+                            other_history = histories.get(other_id, [])
+                            other_state = estimate_motion_state(other_history)
+                            if other_state is None:
+                                continue
+                            relationship = estimate_occlusion_relationship(
+                                hidden_state,
+                                other_state,
+                                history[-1]["bbox"],
+                                other_row["bbox"],
+                            )
+                            if best_pair is None or float(relationship["confidence"]) > float(best_pair["confidence"]):
+                                best_pair = relationship
+                                best_occluder_state = other_state
+                                best_occluder_row = other_row
+
+                        pair_confidence = float((best_pair or {}).get("confidence") or 0.0)
+                        use_occluder = best_occluder_state is not None and pair_confidence >= 0.20
+                        corridor = build_motion_corridor_prediction(
+                            hidden_state=hidden_state,
+                            gap_frames=gap_frames,
+                            current_frame=frame_index,
+                            occluder_state=best_occluder_state if use_occluder else None,
+                            occlusion_pair_confidence=pair_confidence,
+                        )
+                        prediction.update(corridor)
+                        prediction["source"] = corridor["prediction_model"]
+                        prediction["predicted_center"] = {
+                            "x": prediction["predicted_x"],
+                            "y": prediction["predicted_y"],
+                        }
+                        prediction["occluder_track_id"] = int(best_occluder_row["id"]) if use_occluder and best_occluder_row else None
+                        prediction["occluder_canonical_id"] = (
+                            getattr(mapper, "source_to_canonical", {}).get(int(best_occluder_row["id"]))
+                            if use_occluder and best_occluder_row and mapper is not None
+                            else None
+                        )
+                        prediction["occlusion_reason"] = str((best_pair or {}).get("reason") or "no_confident_occluder")
+                    else:
+                        prediction["prediction_model"] = "constant_velocity"
+                        prediction["occluder_track_id"] = None
+                        prediction["occlusion_pair_confidence"] = 0.0
+                        prediction["occlusion_reason"] = "insufficient_motion_history"
+                if visual_continuation:
+                    continuation = estimate_visual_continuation(
+                        frame_image=frame_image,
+                        template=visual_templates.get(raw_id),
+                        predicted_x=float(prediction["predicted_x"]),
+                        predicted_y=float(prediction["predicted_y"]),
+                        gap_frames=gap_frames,
+                        search_radius=int(continuation_search_radius),
+                        threshold=float(continuation_threshold),
+                        max_gap=int(continuation_max_gap),
+                        motion_corridor=prediction if paired_occlusion_prediction else None,
+                    )
+                    prediction["visual_continuation"] = continuation
+                    prediction["visual_continuation_active"] = bool(continuation.get("active"))
+                    prediction["visual_continuation_confidence"] = continuation.get("confidence")
+                    prediction["visual_continuation_status"] = continuation.get("status")
                 if colreg_diagnostics:
                     prediction["colreg_context"] = {
                         "diagnostics_enabled": True,
@@ -348,9 +545,30 @@ def run_tracking(
                 )
 
         boxes = result.boxes
+        if detector_fusion and secondary_detector is not None:
+            frame_image = getattr(result, "orig_img", None)
+            if frame_image is not None:
+                primary_detections = _detections_from_boxes(boxes, "primary", fusion_confidence_threshold)
+                predict_kwargs = {
+                    "source": frame_image,
+                    "device": device,
+                    "conf": float(fusion_confidence_threshold),
+                    "verbose": False,
+                }
+                if imgsz is not None:
+                    predict_kwargs["imgsz"] = int(imgsz)
+                secondary_results = secondary_detector.predict(**predict_kwargs)
+                secondary_boxes = secondary_results[0].boxes if secondary_results else None
+                secondary_detections = _detections_from_boxes(secondary_boxes, "secondary", fusion_confidence_threshold)
+                fused_detections = _union_nms(
+                    primary_detections + secondary_detections,
+                    iou_threshold=float(fusion_iou_threshold),
+                )
+                fusion_stats["frames_evaluated"] += 1
+                _update_fusion_stats(fusion_stats, primary_detections, secondary_detections, fused_detections)
         if boxes is None or boxes.xywh is None or len(boxes) == 0:
             update_in_loop([])
-            record_occlusion_predictions([])
+            record_occlusion_predictions([], getattr(result, "orig_img", None))
             continue
 
         xywh_boxes = boxes.xywh.cpu().tolist()
@@ -361,7 +579,7 @@ def run_tracking(
         if boxes.id is None:
             detections_without_ids[seq_name] = detections_without_ids.get(seq_name, 0) + len(xywh_boxes)
             update_in_loop([])
-            record_occlusion_predictions([])
+            record_occlusion_predictions([], getattr(result, "orig_img", None))
             continue
 
         seq_track_ids = boxes.id.int().cpu().tolist()
@@ -377,7 +595,10 @@ def run_tracking(
             class_ids=class_ids,
         )
         update_in_loop(_tracker_detections(seq_track_ids, xywh_boxes, confidences, class_ids))
-        record_occlusion_predictions(_history_rows(frame_index, seq_track_ids, xywh_boxes, confidences, class_ids))
+        record_occlusion_predictions(
+            _history_rows(frame_index, seq_track_ids, xywh_boxes, confidences, class_ids),
+            getattr(result, "orig_img", None),
+        )
 
     finished_at = time.time()
     wall_time_seconds = max(finished_at - started_at, 0.0)
@@ -403,6 +624,49 @@ def run_tracking(
         "effective_fps": round((total_frames / wall_time_seconds), 6) if wall_time_seconds > 0 else None,
         "sequences": {},
     }
+
+    detector_fusion_report_path = None
+    if detector_fusion:
+        primary_count = int(fusion_stats["primary_detection_count"])
+        secondary_count = int(fusion_stats["secondary_detection_count"])
+        fused_count = int(fusion_stats["fused_detection_count"])
+        detector_fusion_report = {
+            key: value
+            for key, value in fusion_stats.items()
+            if not key.startswith("_")
+        }
+        detector_fusion_report.update(
+            {
+                "mean_primary_confidence": (
+                    round(float(fusion_stats["_primary_confidence_sum"]) / primary_count, 6)
+                    if primary_count
+                    else None
+                ),
+                "mean_secondary_confidence": (
+                    round(float(fusion_stats["_secondary_confidence_sum"]) / secondary_count, 6)
+                    if secondary_count
+                    else None
+                ),
+                "mean_fused_confidence": (
+                    round(float(fusion_stats["_fused_confidence_sum"]) / fused_count, 6)
+                    if fused_count
+                    else None
+                ),
+                "experimental_detector_fusion": True,
+            }
+        )
+        detector_fusion_report_path = output_root / "detector_fusion_report.json"
+        detector_fusion_report_path.write_text(json.dumps(detector_fusion_report, indent=2), encoding="utf-8")
+        run_summary["detector_fusion"] = {
+            "enabled": True,
+            "report_path": str(detector_fusion_report_path),
+            "applied_to_tracker": False,
+            "primary_detection_count": detector_fusion_report["primary_detection_count"],
+            "secondary_detection_count": detector_fusion_report["secondary_detection_count"],
+            "fused_detection_count": detector_fusion_report["fused_detection_count"],
+            "duplicate_removed_count": detector_fusion_report["duplicate_removed_count"],
+            "secondary_only_detection_count": detector_fusion_report["secondary_only_detection_count"],
+        }
 
     sequence_names = set(frame_counters) | set(rows_written) | set(detections_seen) | set(detections_without_ids)
     for seq_name in sorted(sequence_names):
@@ -500,6 +764,37 @@ def run_tracking(
             for prediction in all_occlusion_predictions
             if prediction.get("uncertainty_radius") is not None
         ]
+        continuation_predictions = [
+            prediction.get("visual_continuation") or {}
+            for prediction in all_occlusion_predictions
+            if "visual_continuation" in prediction
+        ]
+        paired_predictions = [
+            prediction
+            for prediction in all_occlusion_predictions
+            if prediction.get("prediction_model") == "paired_motion_corridor"
+        ]
+        occlusion_pair_confidences = [
+            float(prediction.get("occlusion_pair_confidence"))
+            for prediction in all_occlusion_predictions
+            if prediction.get("occlusion_pair_confidence") is not None
+        ]
+        continuation_confidences = [
+            float(continuation.get("confidence"))
+            for continuation in continuation_predictions
+            if continuation.get("confidence") is not None
+        ]
+        continuation_best_part_scores = [
+            float(continuation.get("best_part_score"))
+            for continuation in continuation_predictions
+            if continuation.get("best_part_score") is not None
+        ]
+        matched_part_distribution: dict[str, int] = {}
+        for continuation in continuation_predictions:
+            part_name = continuation.get("matched_part_name")
+            if part_name:
+                part_key = str(part_name)
+                matched_part_distribution[part_key] = matched_part_distribution.get(part_key, 0) + 1
         occlusion_summary = {
             "mode": "in_loop_bounded_latency",
             "reporting_only": True,
@@ -521,6 +816,48 @@ def run_tracking(
             "ais_context_enabled": bool(ais_diagnostics),
             "colreg_diagnostics": bool(colreg_diagnostics),
             "ais_diagnostics": bool(ais_diagnostics),
+            "visual_continuation_enabled": bool(visual_continuation),
+            "visual_continuation_prediction_count": len(continuation_predictions),
+            "visual_continuation_attempted_count": sum(
+                1 for continuation in continuation_predictions if bool(continuation.get("attempted"))
+            ),
+            "visual_continuation_active_count": sum(
+                1 for continuation in continuation_predictions if bool(continuation.get("active"))
+            ),
+            "visual_continuation_lost_count": sum(
+                1 for continuation in continuation_predictions if continuation.get("status") == "lost"
+            ),
+            "mean_visual_continuation_confidence": (
+                round(sum(continuation_confidences) / len(continuation_confidences), 6)
+                if continuation_confidences
+                else None
+            ),
+            "continuation_part_matching_enabled": bool(visual_continuation),
+            "continuation_prediction_count": len(continuation_predictions),
+            "continuation_active_count": sum(
+                1 for continuation in continuation_predictions if bool(continuation.get("active"))
+            ),
+            "mean_continuation_confidence": (
+                round(sum(continuation_confidences) / len(continuation_confidences), 6)
+                if continuation_confidences
+                else None
+            ),
+            "mean_best_part_score": (
+                round(sum(continuation_best_part_scores) / len(continuation_best_part_scores), 6)
+                if continuation_best_part_scores
+                else None
+            ),
+            "matched_part_distribution": dict(sorted(matched_part_distribution.items())),
+            "visual_continuation_note": "diagnostic/visualization only; does not affect tracker or ReID decisions",
+            "paired_occlusion_prediction_enabled": bool(paired_occlusion_prediction),
+            "paired_prediction_count": len(paired_predictions),
+            "occluder_pair_count": sum(1 for prediction in all_occlusion_predictions if prediction.get("occluder_track_id") is not None),
+            "corridor_prediction_count": sum(1 for prediction in all_occlusion_predictions if prediction.get("motion_corridor_start")),
+            "mean_occlusion_pair_confidence": (
+                round(sum(occlusion_pair_confidences) / len(occlusion_pair_confidences), 6)
+                if occlusion_pair_confidences
+                else None
+            ),
         }
         occlusion_report_path.write_text(
             json.dumps(
@@ -611,6 +948,11 @@ def run_tracking(
             "decision_latency_mean": report_payload["summary"]["decision_latency_mean"],
             "decision_latency_max": report_payload["summary"]["decision_latency_max"],
             "confirmation_observations": int(confirmation_observations),
+            "visual_continuation_enabled": bool(visual_continuation),
+            "continuation_search_radius": int(continuation_search_radius),
+            "continuation_threshold": float(continuation_threshold),
+            "continuation_max_gap": int(continuation_max_gap),
+            "paired_occlusion_prediction_enabled": bool(paired_occlusion_prediction),
         }
         run_summary["live_reid_in_loop"] = live_reid_in_loop_result
 
@@ -625,6 +967,25 @@ def run_tracking(
     }
     if live_reid_in_loop_result is not None:
         result["live_reid_in_loop"] = live_reid_in_loop_result
+    if detector_fusion_report_path is not None:
+        result["detector_fusion"] = {
+            "enabled": True,
+            "report_path": str(detector_fusion_report_path),
+            "applied_to_tracker": False,
+            "primary_model": model_path,
+            "secondary_model": secondary_model,
+            "fusion_mode": fusion_mode,
+            "fusion_iou_threshold": float(fusion_iou_threshold),
+            "fusion_confidence_threshold": float(fusion_confidence_threshold),
+            "primary_detection_count": detector_fusion_report["primary_detection_count"],
+            "secondary_detection_count": detector_fusion_report["secondary_detection_count"],
+            "fused_detection_count": detector_fusion_report["fused_detection_count"],
+            "duplicate_removed_count": detector_fusion_report["duplicate_removed_count"],
+            "secondary_only_detection_count": detector_fusion_report["secondary_only_detection_count"],
+            "mean_primary_confidence": detector_fusion_report["mean_primary_confidence"],
+            "mean_secondary_confidence": detector_fusion_report["mean_secondary_confidence"],
+            "mean_fused_confidence": detector_fusion_report["mean_fused_confidence"],
+        }
 
     if live_reid:
         from stitching.live_reid import live_reid_tracks

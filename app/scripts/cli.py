@@ -77,6 +77,16 @@ def cmd_track(args):
         ais_file=args.ais_file,
         ais_video_start_time=args.ais_video_start_time,
         ais_affine_matrix=args.ais_affine_matrix,
+        visual_continuation=args.visual_continuation,
+        continuation_search_radius=args.continuation_search_radius,
+        continuation_threshold=args.continuation_threshold,
+        continuation_max_gap=args.continuation_max_gap,
+        paired_occlusion_prediction=args.paired_occlusion_prediction,
+        secondary_model=args.secondary_model,
+        detector_fusion=args.detector_fusion,
+        fusion_iou_threshold=args.fusion_iou_threshold,
+        fusion_confidence_threshold=args.fusion_confidence_threshold,
+        fusion_mode=args.fusion_mode,
     )
     print(result)
 
@@ -272,6 +282,7 @@ def cmd_render_video(args):
             occlusion_predictions_path=args.occlusion_predictions,
             side_by_side=args.side_by_side_demo,
             video_codec=args.video_codec,
+            motion_corridor_overlay=args.motion_corridor_overlay,
         )
     print(result)
 
@@ -313,6 +324,18 @@ def build_parser():
     sp.add_argument("--name", default="botsort_run")
     sp.add_argument("--conf", type=float, help="Optional detector confidence threshold passed to Ultralytics tracking.")
     sp.add_argument("--imgsz", type=int, help="Optional image size passed to Ultralytics tracking.")
+    sp.add_argument("--secondary-model", help="Optional secondary detector for experimental fusion diagnostics.")
+    sp.add_argument(
+        "--detector-fusion",
+        action="store_true",
+        help=(
+            "Experimental detector fusion diagnostics. The current tracker loop keeps primary-model "
+            "tracking/MOT output unchanged unless a custom pre-tracker fusion loop is added."
+        ),
+    )
+    sp.add_argument("--fusion-iou-threshold", type=float, default=0.55)
+    sp.add_argument("--fusion-confidence-threshold", type=float, default=0.25)
+    sp.add_argument("--fusion-mode", choices=["union_nms"], default="union_nms")
     sp.add_argument(
         "--live-reid",
         action="store_true",
@@ -340,6 +363,25 @@ def build_parser():
         type=int,
         default=10,
         help="Bounded-latency observation buffer used by live ReID modes. Default: 10.",
+    )
+    sp.add_argument(
+        "--visual-continuation",
+        action="store_true",
+        help=(
+            "Reporting-only local template continuation for live in-loop occlusion reports. "
+            "Does not affect tracker/ReID decisions or MOT output."
+        ),
+    )
+    sp.add_argument("--continuation-search-radius", type=int, default=64)
+    sp.add_argument("--continuation-threshold", type=float, default=0.45)
+    sp.add_argument("--continuation-max-gap", type=int, default=60)
+    sp.add_argument(
+        "--paired-occlusion-prediction",
+        action="store_true",
+        help=(
+            "Reporting-only paired-vessel motion corridor prediction for occlusion reports. "
+            "Does not affect tracker/ReID decisions or MOT output."
+        ),
     )
     sp.add_argument(
         "--colreg-diagnostics",
@@ -465,6 +507,7 @@ def build_parser():
     sp.add_argument("--no-labels", action="store_true")
     sp.add_argument("--occlusion-predictions", help="Optional reporting-only occlusion prediction JSON overlay.")
     sp.add_argument("--side-by-side-demo", action="store_true", help="Render original and annotated video side by side.")
+    sp.add_argument("--motion-corridor-overlay", action="store_true", help="Draw directional corridor ellipses/arrows when present.")
     sp.add_argument(
         "--video-codec",
         choices=["auto", "mp4v", "h264"],

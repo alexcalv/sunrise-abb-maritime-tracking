@@ -1,5 +1,6 @@
 data
 outputs
+outputs_v2
 .idea/
 tmp_eval_frames/
 tmp_zip_branch/

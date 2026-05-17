@@ -28,6 +28,8 @@ TRACK_COLORS = [
     (255, 255, 80),
 ]
 OCCLUSION_COLOR = (255, 80, 255)
+CONTINUATION_COLOR = (255, 220, 80)
+CONTINUATION_ACTIVE_COLOR = (80, 255, 255)
 OCCLUSION_FILL_ALPHA = 0.18
 RECOVERY_COLOR = (80, 255, 180)
 STATUS_BG_COLOR = (10, 20, 30)
@@ -147,17 +149,42 @@ def _count_recovery_events(events_by_frame: dict[int, list[dict]]) -> int:
     return len(unique_events)
 
 
+def _ship_label(track_id: int | str | None) -> str:
+    return f"ship {track_id}" if track_id is not None else "ship ?"
+
+
+def _display_prediction_source(source: object) -> str:
+    text = str(source or "predicted").replace("_", " ")
+    return text if text else "predicted"
+
+
 def _occlusion_label_lines(prediction: dict) -> list[str]:
     raw_track_id = prediction.get("raw_track_id", prediction.get("track_id"))
     canonical_id = prediction.get("canonical_id")
-    lines = [f"pred raw {raw_track_id}"]
-    if canonical_id is not None:
-        lines.append(f"canon {canonical_id}")
-    lines.append(f"gap {int(prediction.get('gap_frames', 0))}")
-    lines.append(str(prediction.get("source", "prediction")))
+    display_id = canonical_id if canonical_id is not None else raw_track_id
+    source = _display_prediction_source(prediction.get("source", "prediction"))
+    lines = [
+        _ship_label(display_id),
+        f"gap {int(prediction.get('gap_frames', 0))} | predicted",
+        f"source {source}",
+    ]
+    occluder_id = prediction.get("occluder_canonical_id") or prediction.get("occluder_track_id")
+    if occluder_id is not None:
+        lines.append(f"occluded by {_ship_label(occluder_id)}")
+    expected_side = prediction.get("expected_reappearance_side")
+    if expected_side and expected_side != "unknown":
+        lines.append(f"expected exit: {expected_side}")
+    continuation = prediction.get("visual_continuation")
+    if isinstance(continuation, dict):
+        status = str(continuation.get("status") or "lost")
+        confidence = float(continuation.get("confidence") or 0.0)
+        part_name = continuation.get("matched_part_name")
+        if part_name:
+            lines.append(f"{status} {confidence:.2f} | part {part_name}")
+        else:
+            lines.append(f"continuation {status} {confidence:.2f}")
     if bool(prediction.get("recovered_by_remap")):
-        target = prediction.get("remap_target_raw_track_id")
-        lines.append(f"recovered -> raw {target}")
+        lines.append("recovered by ReID")
     return lines
 
 
@@ -169,14 +196,40 @@ def _draw_recovery_events(frame, events: list[dict]) -> None:
         recovered_raw_id = event.get("recovered_raw_id")
         canonical_id = event.get("canonical_id")
         if recovered_raw_id is not None and canonical_id is not None:
-            lines.append(f"ReID recovered: raw {recovered_raw_id} -> canon {canonical_id}")
+            lines.append(f"ReID recovered: {_ship_label(recovered_raw_id)} -> {_ship_label(canonical_id)}")
         else:
             lines.append("ReID recovered identity after gap")
     _draw_label_block(frame, 16, 52, lines, RECOVERY_COLOR)
 
 
-def _draw_occlusion_prediction(frame, prediction: dict) -> None:
-    """Draw the prediction ghost and uncertainty circle for a missing track."""
+def _draw_motion_corridor(frame, prediction: dict, center_x: int, center_y: int) -> bool:
+    major = prediction.get("uncertainty_major_axis")
+    minor = prediction.get("uncertainty_minor_axis")
+    if major is None or minor is None:
+        return False
+    angle = float(prediction.get("uncertainty_angle_deg") or 0.0)
+    axes = (
+        max(2, int(round(float(major)))),
+        max(2, int(round(float(minor)))),
+    )
+    overlay = frame.copy()
+    cv2.ellipse(overlay, (center_x, center_y), axes, angle, 0, 360, OCCLUSION_COLOR, -1)
+    cv2.addWeighted(overlay, OCCLUSION_FILL_ALPHA, frame, 1.0 - OCCLUSION_FILL_ALPHA, 0, frame)
+    cv2.ellipse(frame, (center_x, center_y), axes, angle, 0, 360, OCCLUSION_COLOR, 2)
+
+    start = prediction.get("motion_corridor_start") or {}
+    end = prediction.get("motion_corridor_end") or {}
+    if start and end:
+        sx = _clamp(int(round(float(start.get("x", center_x)))), 0, frame.shape[1] - 1)
+        sy = _clamp(int(round(float(start.get("y", center_y)))), 0, frame.shape[0] - 1)
+        ex = _clamp(int(round(float(end.get("x", center_x)))), 0, frame.shape[1] - 1)
+        ey = _clamp(int(round(float(end.get("y", center_y)))), 0, frame.shape[0] - 1)
+        cv2.arrowedLine(frame, (sx, sy), (ex, ey), OCCLUSION_COLOR, 2, cv2.LINE_AA, tipLength=0.18)
+    return True
+
+
+def _draw_occlusion_prediction(frame, prediction: dict, *, motion_corridor_overlay: bool = False) -> None:
+    """Draw a missing-vessel prediction; optional corridor fields stay visualization-only."""
 
     frame_height, frame_width = frame.shape[:2]
     center = prediction.get("predicted_center") or {}
@@ -186,11 +239,13 @@ def _draw_occlusion_prediction(frame, prediction: dict) -> None:
     center_x = _clamp(int(round(x)), 0, max(frame_width - 1, 0))
     center_y = _clamp(int(round(y)), 0, max(frame_height - 1, 0))
 
-    overlay = frame.copy()
-    # The translucent fill makes uncertainty visible without hiding the vessel scene.
-    cv2.circle(overlay, (center_x, center_y), radius, OCCLUSION_COLOR, -1)
-    cv2.addWeighted(overlay, OCCLUSION_FILL_ALPHA, frame, 1.0 - OCCLUSION_FILL_ALPHA, 0, frame)
-    cv2.circle(frame, (center_x, center_y), radius, OCCLUSION_COLOR, 2)
+    drew_corridor = motion_corridor_overlay and _draw_motion_corridor(frame, prediction, center_x, center_y)
+    if not drew_corridor:
+        overlay = frame.copy()
+        # The translucent fill makes uncertainty visible without hiding the vessel scene.
+        cv2.circle(overlay, (center_x, center_y), radius, OCCLUSION_COLOR, -1)
+        cv2.addWeighted(overlay, OCCLUSION_FILL_ALPHA, frame, 1.0 - OCCLUSION_FILL_ALPHA, 0, frame)
+        cv2.circle(frame, (center_x, center_y), radius, OCCLUSION_COLOR, 2)
     cv2.drawMarker(
         frame,
         (center_x, center_y),
@@ -200,6 +255,21 @@ def _draw_occlusion_prediction(frame, prediction: dict) -> None:
         thickness=2,
         line_type=cv2.LINE_AA,
     )
+    continuation = prediction.get("visual_continuation")
+    if isinstance(continuation, dict):
+        search_window = continuation.get("search_window") or {}
+        if search_window:
+            x1 = int(search_window.get("x", 0))
+            y1 = int(search_window.get("y", 0))
+            x2 = x1 + int(search_window.get("w", 0))
+            y2 = y1 + int(search_window.get("h", 0))
+            color = CONTINUATION_ACTIVE_COLOR if continuation.get("active") else CONTINUATION_COLOR
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)
+        best_center = continuation.get("best_center") or {}
+        if best_center:
+            best_x = _clamp(int(round(float(best_center.get("x", center_x)))), 0, max(frame_width - 1, 0))
+            best_y = _clamp(int(round(float(best_center.get("y", center_y)))), 0, max(frame_height - 1, 0))
+            cv2.circle(frame, (best_x, best_y), 5, CONTINUATION_ACTIVE_COLOR, -1)
     _draw_label_block(frame, center_x + 8, center_y, _occlusion_label_lines(prediction), OCCLUSION_COLOR)
 
 
@@ -228,6 +298,7 @@ def _draw_status_strip(frame, frame_index: int, context: dict | None) -> None:
     mode = context.get("mode") or "raw"
     reid_enabled = "yes" if context.get("reid_enabled") else "no"
     occlusion_enabled = "yes" if context.get("occlusion_predictions_enabled") else "no"
+    corridor_enabled = "yes" if context.get("motion_corridor_overlay") else "no"
     colreg_enabled = "yes" if context.get("colreg_diagnostics") else "no"
     ais_enabled = "yes" if context.get("ais_diagnostics") else "no"
     lines: list[str] = []
@@ -238,8 +309,11 @@ def _draw_status_strip(frame, frame_index: int, context: dict | None) -> None:
     lines.extend(
         [
             f"Frame {frame_index} | mode: {mode} | ReID: {reid_enabled} | occlusion prediction: {occlusion_enabled}",
+            f"motion corridor overlay: {corridor_enabled} | paired prediction is visualization/reporting only",
             f"COLREG diagnostics: {colreg_enabled} | AIS diagnostics: {ais_enabled} | bounded-latency live demo",
-            "Legend: raw/canon labels = tracker/ReID IDs | magenta ghost+circle = predicted position + uncertainty",
+            "Left: original | Right: tracking + ReID + occlusion prediction",
+            "Legend: ship label = displayed vessel ID | magenta ghost+circle = prediction + uncertainty",
+            "Yellow box/dot = visual continuation search and best local template match when enabled",
             "Green banner = ReID recovery event | COLREG/AIS are reporting-only when enabled",
         ]
     )
@@ -470,18 +544,11 @@ def _track_label_lines(
         return []
 
     track_id = int(row["id"])
-    is_canonical = rendered_mot_kind in {"live_reid", "live_reid_in_loop"}
     if label_mode == "id":
-        if is_canonical:
-            raw_label = f"raw {raw_track_id}" if raw_track_id is not None else "raw ?"
-            return [raw_label, f"canon {track_id}"]
-        return [f"raw {track_id}"]
+        return [_ship_label(track_id)]
 
     confidence = float(row.get("confidence", 0.0))
-    if is_canonical:
-        raw_label = f"raw {raw_track_id}" if raw_track_id is not None else "raw ?"
-        return [raw_label, f"canon {track_id}", f"conf {confidence:.2f}"]
-    return [f"raw {track_id}", f"conf {confidence:.2f}"]
+    return [_ship_label(track_id), f"conf {confidence:.2f}"]
 
 
 def render_annotated_video(
@@ -579,6 +646,7 @@ def render_video_from_mot(
     rendered_mot_kind: str = "raw",
     status_context: dict | None = None,
     video_codec: str = "auto",
+    motion_corridor_overlay: bool = False,
 ) -> dict:
     label_mode = _normalize_label_mode(label_mode, default="id")
     requested_codec = _normalize_video_codec(video_codec)
@@ -650,12 +718,12 @@ def render_video_from_mot(
         if frame_predictions:
             frames_with_occlusion_predictions += 1
         for prediction in frame_predictions:
-            _draw_occlusion_prediction(frame, prediction)
+            _draw_occlusion_prediction(frame, prediction, motion_corridor_overlay=motion_corridor_overlay)
             occlusion_predictions_rendered += 1
 
         if side_by_side and original_frame is not None:
-            cv2.putText(original_frame, "Original", (16, 28), LABEL_FONT, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-            cv2.putText(frame, "Tracking + ReID + prediction", (16, 28), LABEL_FONT, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(original_frame, "Left: original", (16, 28), LABEL_FONT, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame, "Right: tracking + ReID + prediction", (16, 28), LABEL_FONT, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
             combined = cv2.hconcat([original_frame, frame])
             _draw_status_strip(combined, frame_index, status_context)
             writer.write(combined)
@@ -681,6 +749,7 @@ def render_video_from_mot(
         "occlusion_predictions_rendered": occlusion_predictions_rendered,
         "recovery_event_count": recovery_event_count,
         "side_by_side": bool(side_by_side),
+        "motion_corridor_overlay": bool(motion_corridor_overlay),
         "raw_mot_file": raw_mot_file_path,
         "rendered_mot_kind": rendered_mot_kind,
         "mot_frames": len(rows_by_frame),

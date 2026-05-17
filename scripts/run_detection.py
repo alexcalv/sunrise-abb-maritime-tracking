@@ -29,6 +29,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--conf", type=float, help="Optional detector confidence threshold.")
     parser.add_argument("--imgsz", type=int, help="Optional detector image size.")
+    parser.add_argument("--secondary-model", help="Optional secondary detector for experimental fusion diagnostics.")
+    parser.add_argument(
+        "--detector-fusion",
+        action="store_true",
+        help=(
+            "Experimental detector fusion diagnostics. The current tracker loop preserves primary-model "
+            "tracking/MOT output unless true pre-tracker fusion is added later."
+        ),
+    )
+    parser.add_argument("--fusion-iou-threshold", type=float, default=0.55)
+    parser.add_argument("--fusion-confidence-threshold", type=float, default=0.25)
+    parser.add_argument("--fusion-mode", choices=["union_nms"], default="union_nms")
     parser.add_argument(
         "--demo-mode",
         action="store_true",
@@ -49,6 +61,45 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--live-reid-in-loop", action="store_true", help="Run tracker-loop bounded-latency ReID v1.")
     parser.add_argument("--live-reid-config", help="Optional ReID config path.")
     parser.add_argument("--confirmation-observations", type=int, default=10)
+    parser.add_argument(
+        "--visual-continuation",
+        action="store_true",
+        help=(
+            "Add reporting-only local template continuation during occlusion gaps. "
+            "Does not alter tracking, ReID, or MOT output."
+        ),
+    )
+    parser.add_argument(
+        "--paired-occlusion-prediction",
+        action="store_true",
+        help=(
+            "Add reporting-only paired-vessel motion corridor fields when an occluder can be estimated. "
+            "Does not alter tracking, ReID, or MOT output."
+        ),
+    )
+    parser.add_argument(
+        "--motion-corridor-overlay",
+        action="store_true",
+        help="Draw directional corridor ellipses/arrows for paired occlusion predictions in rendered demos.",
+    )
+    parser.add_argument(
+        "--continuation-search-radius",
+        type=int,
+        default=64,
+        help="Pixel radius for the visual-continuation local search window. Default: 64.",
+    )
+    parser.add_argument(
+        "--continuation-threshold",
+        type=float,
+        default=0.45,
+        help="Minimum decayed template-match confidence for continuation to be marked active. Default: 0.45.",
+    )
+    parser.add_argument(
+        "--continuation-max-gap",
+        type=int,
+        default=60,
+        help="Maximum gap, in frames, for visual-continuation matching. Default: 60.",
+    )
     parser.add_argument(
         "--colreg-diagnostics",
         action="store_true",
@@ -178,6 +229,14 @@ def _write_demo_summary(args: argparse.Namespace, result: dict, summary: dict) -
         "tracker": args.tracker,
         "tracker_config": args.tracker,
         "model": args.model,
+        "primary_model": args.model,
+        "secondary_model": args.secondary_model,
+        "detector_fusion_enabled": bool(args.detector_fusion),
+        "detector_fusion_report": (result.get("detector_fusion") or {}).get("report_path"),
+        "fused_detection_count": (result.get("detector_fusion") or {}).get("fused_detection_count"),
+        "secondary_only_detection_count": (result.get("detector_fusion") or {}).get("secondary_only_detection_count"),
+        "duplicate_removed_count": (result.get("detector_fusion") or {}).get("duplicate_removed_count"),
+        "detector_fusion_applied_to_tracker": (result.get("detector_fusion") or {}).get("applied_to_tracker"),
         "mode": summary.get("rendered_mot_kind") or ("live_reid_in_loop" if summary.get("live_reid_mot_dir") else "raw"),
         "raw_mot_path": _single_mot_file(result.get("mot_dir")),
         "raw_mot_dir": result.get("mot_dir"),
@@ -190,6 +249,7 @@ def _write_demo_summary(args: argparse.Namespace, result: dict, summary: dict) -
         "final_demo_video_path": summary.get("render_output"),
         "rendered_mot_kind": summary.get("rendered_mot_kind"),
         "occlusion_overlay_enabled": bool(summary.get("occlusion_overlay_enabled")),
+        "motion_corridor_overlay_enabled": bool(args.motion_corridor_overlay),
         "video_codec_requested": summary.get("video_codec_requested"),
         "video_codec_used": summary.get("video_codec_used"),
         "ffmpeg_transcode_used": bool(summary.get("ffmpeg_transcode_used")),
@@ -200,6 +260,22 @@ def _write_demo_summary(args: argparse.Namespace, result: dict, summary: dict) -
         "recovery_event_count": int(summary.get("recovery_event_count") or 0),
         "max_gap_frames": int(occlusion_summary.get("max_gap_frames") or 0),
         "mean_uncertainty_radius": occlusion_summary.get("mean_uncertainty_radius"),
+        "visual_continuation_enabled": bool(occlusion_summary.get("visual_continuation_enabled")),
+        "visual_continuation_prediction_count": int(occlusion_summary.get("visual_continuation_prediction_count") or 0),
+        "visual_continuation_active_count": int(occlusion_summary.get("visual_continuation_active_count") or 0),
+        "mean_visual_continuation_confidence": occlusion_summary.get("mean_visual_continuation_confidence"),
+        "continuation_part_matching_enabled": bool(occlusion_summary.get("continuation_part_matching_enabled")),
+        "continuation_prediction_count": int(occlusion_summary.get("continuation_prediction_count") or 0),
+        "continuation_active_count": int(occlusion_summary.get("continuation_active_count") or 0),
+        "mean_continuation_confidence": occlusion_summary.get("mean_continuation_confidence"),
+        "mean_best_part_score": occlusion_summary.get("mean_best_part_score"),
+        "matched_part_distribution": occlusion_summary.get("matched_part_distribution") or {},
+        "visual_continuation_note": occlusion_summary.get("visual_continuation_note"),
+        "paired_occlusion_prediction_enabled": bool(occlusion_summary.get("paired_occlusion_prediction_enabled")),
+        "paired_prediction_count": int(occlusion_summary.get("paired_prediction_count") or 0),
+        "occluder_pair_count": int(occlusion_summary.get("occluder_pair_count") or 0),
+        "mean_occlusion_pair_confidence": occlusion_summary.get("mean_occlusion_pair_confidence"),
+        "corridor_prediction_count": int(occlusion_summary.get("corridor_prediction_count") or 0),
         "colreg_diagnostics_enabled": bool(args.colreg_diagnostics),
         "ais_diagnostics_enabled": bool(args.ais_diagnostics),
         "reporting_context_note": "COLREG/AIS diagnostics are reporting-only and do not affect tracking or ReID decisions.",
@@ -225,6 +301,23 @@ def _print_human_summary(summary: dict) -> None:
     print(f"  prediction count: {summary.get('prediction_count', 0)}")
     print(f"  recovered predictions: {summary.get('recovered_prediction_count', 0)}")
     print(f"  max gap frames: {summary.get('max_gap_frames', 0)}")
+    print(f"  visual continuation: {'enabled' if summary.get('visual_continuation_enabled') else 'disabled'}")
+    if summary.get("visual_continuation_enabled"):
+        print(f"  continuation active predictions: {summary.get('visual_continuation_active_count', 0)}")
+        print(f"  mean continuation confidence: {summary.get('mean_continuation_confidence')}")
+        print(f"  matched parts: {summary.get('matched_part_distribution') or {}}")
+    print(f"  paired occlusion prediction: {'enabled' if summary.get('paired_occlusion_prediction_enabled') else 'disabled'}")
+    if summary.get("paired_occlusion_prediction_enabled"):
+        print(f"  paired predictions: {summary.get('paired_prediction_count', 0)}")
+        print(f"  occluder pairs: {summary.get('occluder_pair_count', 0)}")
+        print(f"  mean pair confidence: {summary.get('mean_occlusion_pair_confidence')}")
+    print(f"  detector fusion: {'enabled' if summary.get('detector_fusion_enabled') else 'disabled'}")
+    if summary.get("detector_fusion_enabled"):
+        print(f"  fusion report: {summary.get('detector_fusion_report')}")
+        print(f"  fused detections: {summary.get('fused_detection_count')}")
+        print(f"  secondary-only detections: {summary.get('secondary_only_detection_count')}")
+        print(f"  duplicate detections removed: {summary.get('duplicate_removed_count')}")
+        print(f"  fusion applied to tracker: {summary.get('detector_fusion_applied_to_tracker')}")
     print(f"  recovery events: {summary.get('recovery_event_count', 0)}")
     print(f"  COLREG diagnostics: {'enabled' if summary.get('colreg_diagnostics') else 'disabled'}")
     print(f"  AIS diagnostics: {'enabled' if summary.get('ais_diagnostics') else 'disabled'}")
@@ -265,6 +358,16 @@ def main() -> None:
         ais_file=args.ais_file,
         ais_video_start_time=args.ais_video_start_time,
         ais_affine_matrix=args.ais_affine_matrix,
+        visual_continuation=args.visual_continuation,
+        continuation_search_radius=args.continuation_search_radius,
+        continuation_threshold=args.continuation_threshold,
+        continuation_max_gap=args.continuation_max_gap,
+        paired_occlusion_prediction=args.paired_occlusion_prediction,
+        secondary_model=args.secondary_model,
+        detector_fusion=args.detector_fusion,
+        fusion_iou_threshold=args.fusion_iou_threshold,
+        fusion_confidence_threshold=args.fusion_confidence_threshold,
+        fusion_mode=args.fusion_mode,
     )
 
     if args.render or args.live_preview or args.side_by_side_demo:
@@ -292,12 +395,14 @@ def main() -> None:
                 "mode": mot_kind,
                 "reid_enabled": bool(result.get("live_reid") or result.get("live_reid_in_loop")),
                 "occlusion_predictions_enabled": bool(occlusion_predictions),
+                "motion_corridor_overlay": bool(args.motion_corridor_overlay),
                 "colreg_diagnostics": bool(args.colreg_diagnostics),
                 "ais_diagnostics": bool(args.ais_diagnostics),
                 "demo_title": args.demo_title,
                 "demo_note": args.demo_note,
             },
             video_codec=args.video_codec,
+            motion_corridor_overlay=args.motion_corridor_overlay,
         )
         result["render"]["rendered_mot_kind"] = mot_kind
         result["render"]["rendered_mot_path"] = str(mot_file)
@@ -330,6 +435,7 @@ def main() -> None:
         "rendered_mot_path": None,
         "rendered_mot_kind": None,
         "occlusion_overlay_enabled": False,
+        "motion_corridor_overlay_enabled": bool(args.motion_corridor_overlay),
         "occlusion_predictions_rendered": 0,
         "video_codec_requested": args.video_codec,
         "video_codec_used": None,
@@ -340,6 +446,13 @@ def main() -> None:
         "accepted_remaps": [],
         "colreg_diagnostics": bool(args.colreg_diagnostics),
         "ais_diagnostics": bool(args.ais_diagnostics),
+        "visual_continuation_enabled": bool(args.visual_continuation),
+        "paired_occlusion_prediction_enabled": bool(args.paired_occlusion_prediction),
+        "detector_fusion_enabled": bool(args.detector_fusion),
+        "detector_fusion_report": None,
+        "fused_detection_count": None,
+        "secondary_only_detection_count": None,
+        "duplicate_removed_count": None,
     }
     if result.get("live_reid_in_loop"):
         summary["live_reid_mot_dir"] = result["live_reid_in_loop"].get("mot_dir")
@@ -353,6 +466,7 @@ def main() -> None:
         summary["rendered_mot_path"] = result["render"].get("rendered_mot_path")
         summary["rendered_mot_kind"] = result["render"].get("rendered_mot_kind")
         summary["occlusion_overlay_enabled"] = bool(result["render"].get("occlusion_overlay_enabled"))
+        summary["motion_corridor_overlay_enabled"] = bool(result["render"].get("motion_corridor_overlay"))
         summary["occlusion_predictions_rendered"] = int(result["render"].get("occlusion_predictions_rendered") or 0)
         summary["recovery_event_count"] = int(result["render"].get("recovery_event_count") or 0)
         summary["video_codec_requested"] = result["render"].get("video_codec_requested")
@@ -367,6 +481,29 @@ def main() -> None:
         summary["recovery_event_count"] = _count_recovery_events(summary.get("occlusion_predictions"))
     summary["max_gap_frames"] = int(occlusion_summary.get("max_gap_frames") or 0)
     summary["mean_uncertainty_radius"] = occlusion_summary.get("mean_uncertainty_radius")
+    summary["visual_continuation_enabled"] = bool(occlusion_summary.get("visual_continuation_enabled"))
+    summary["visual_continuation_prediction_count"] = int(occlusion_summary.get("visual_continuation_prediction_count") or 0)
+    summary["visual_continuation_active_count"] = int(occlusion_summary.get("visual_continuation_active_count") or 0)
+    summary["mean_visual_continuation_confidence"] = occlusion_summary.get("mean_visual_continuation_confidence")
+    summary["continuation_part_matching_enabled"] = bool(occlusion_summary.get("continuation_part_matching_enabled"))
+    summary["continuation_prediction_count"] = int(occlusion_summary.get("continuation_prediction_count") or 0)
+    summary["continuation_active_count"] = int(occlusion_summary.get("continuation_active_count") or 0)
+    summary["mean_continuation_confidence"] = occlusion_summary.get("mean_continuation_confidence")
+    summary["mean_best_part_score"] = occlusion_summary.get("mean_best_part_score")
+    summary["matched_part_distribution"] = occlusion_summary.get("matched_part_distribution") or {}
+    summary["visual_continuation_note"] = occlusion_summary.get("visual_continuation_note")
+    summary["paired_occlusion_prediction_enabled"] = bool(occlusion_summary.get("paired_occlusion_prediction_enabled"))
+    summary["paired_prediction_count"] = int(occlusion_summary.get("paired_prediction_count") or 0)
+    summary["occluder_pair_count"] = int(occlusion_summary.get("occluder_pair_count") or 0)
+    summary["mean_occlusion_pair_confidence"] = occlusion_summary.get("mean_occlusion_pair_confidence")
+    summary["corridor_prediction_count"] = int(occlusion_summary.get("corridor_prediction_count") or 0)
+    fusion_result = result.get("detector_fusion") or {}
+    if fusion_result:
+        summary["detector_fusion_report"] = fusion_result.get("report_path")
+        summary["fused_detection_count"] = fusion_result.get("fused_detection_count")
+        summary["secondary_only_detection_count"] = fusion_result.get("secondary_only_detection_count")
+        summary["duplicate_removed_count"] = fusion_result.get("duplicate_removed_count")
+        summary["detector_fusion_applied_to_tracker"] = fusion_result.get("applied_to_tracker")
     summary["demo_summary"] = str(_write_demo_summary(args, result, summary))
     summary["raw_result"] = result
     _print_human_summary(summary)

@@ -16,14 +16,18 @@ The easiest way to review the prototype is the side-by-side demo video:
 |---|---|
 | Left panel | Original source video. |
 | Right panel | Processed video with tracking, ReID, and prediction overlays. |
-| Box label `raw` | The tracker ID produced by BoT-SORT or ByteTrack. |
-| Box label `canon` | The canonical ReID identity after bounded-latency remapping. |
+| Box label `ship <id>` | The displayed vessel identity. On raw renders this is the tracker ID; on ReID renders it is the ReID-stabilized canonical ID. |
 | Magenta ghost/crosshair | Predicted vessel position while the target is visually missing. |
-| Magenta circle | Prediction uncertainty. The radius grows as the gap gets longer. |
-| Green recovery label | ReID linked a reappearing raw track back to an earlier canonical identity. |
+| Magenta circle or ellipse | Prediction uncertainty. The radius grows as the gap gets longer; optional corridor mode makes uncertainty directional. |
+| Magenta arrow/corridor | Optional paired-vessel motion corridor: uses the hidden ship and likely occluder motion vectors to show a likely path and exit side. |
+| Yellow search box/dot | Optional visual continuation: local part-template search around the prediction. |
+| Green recovery label | ReID linked a reappearing ship back to an earlier identity. |
 | COLREG/AIS text | Optional context only. It does not change tracker or ReID decisions. |
 
-Prediction is deterministic constant velocity for now. It is for reporting and visualization, not forced matching.
+Prediction is deterministic constant velocity by default. Optional paired-vessel corridor prediction adds directional uncertainty when a likely occluding ship can be estimated. Both modes are for reporting and visualization, not forced matching.
+`--visual-continuation` adds lightweight part-template checks inside each prediction search window. It compares the full crop plus simple ship parts such as left, right, upper, lower, and center crops, then reports the best part match and confidence. It is still reporting-only and does not change tracking or ReID.
+
+Internally, reports still keep the technical `raw_track_id` and `canonical_id` fields. The video uses `ship <id>` labels so the demo is easier to read.
 
 ## Workflow Overview
 
@@ -97,7 +101,27 @@ Expected outputs:
 
 This is a bounded-latency live demo, not zero-latency production live ReID.
 
+For the optional partial-occlusion visual-continuation overlay, add:
+
+```bash
+--visual-continuation
+```
+
+For the optional paired-vessel motion corridor overlay, add:
+
+```bash
+--visual-continuation \
+--paired-occlusion-prediction \
+--motion-corridor-overlay
+```
+
+This estimates a likely occluding ship, directional uncertainty, and expected reappearance side when the geometry is clear enough. It remains visualization/reporting only.
+
+Hard-case demo batches can be generated under `outputs_v2/partial_occlusion_batches/`. These runs are useful for inspecting partial occlusion, drift, and crowded ambiguity, but visual continuation remains reporting/visualization only and should not change raw or canonical MOT output.
+
 Demo videos default to `--video-codec auto`, which tries to produce a Windows-friendly H.264 MP4. If Windows Media Player Legacy still refuses a file, VLC should open it; you can also rerun with `--video-codec h264` to require the H.264 path when OpenCV or ffmpeg supports it.
+
+Experimental detector fusion is available for review runs with `--secondary-model` and `--detector-fusion`. The current implementation writes `detector_fusion_report.json` so the primary detector can be compared with a second model, but it does not feed fused detections into BoT-SORT yet. Raw MOT, canonical MOT, and ReID decisions still come from the primary tracking path.
 
 ### Raw BoT-SORT
 
@@ -269,7 +293,7 @@ Detector and ReID training are outside this pass. The repo currently focuses on 
 ## Current Limitations
 
 - ReID is ready for review, but not fully production-hardened.
-- The occlusion predictor is constant velocity only.
+- Occlusion prediction is image-plane and demo-oriented; paired motion corridors are reporting-only and still need broader validation.
 - COLREG is context-only by default.
 - AIS needs real files and timing/projection metadata before real validation.
 - `HOTA` is not implemented.

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ais.checks import run_checks as run_ais_checks
+from ais.fvessel_identity_eval import run_fvessel_ais_identity_eval
 from broker.celery_app import celery_app
 from colreg.checks import run_checks as run_colreg_checks
 from common.config import settings
@@ -418,6 +419,26 @@ def cmd_self_check(args):
         raise SystemExit(1)
 
 
+def cmd_fvessel_ais_eval(args):
+    summary = run_fvessel_ais_identity_eval(
+        alignment_root=args.alignment_root,
+        run_root=args.run_root,
+        output_dir=args.output_dir,
+        model=args.model,
+        tracker=args.tracker,
+        live_reid_config=args.live_reid_config,
+        confirmation_observations=args.confirmation_observations,
+        min_alignment_confidence=args.min_alignment_confidence,
+        max_clips=args.max_clips,
+        include_low_confidence=args.include_low_confidence,
+        device=args.device,
+        iou_threshold=args.iou_threshold,
+    )
+    print(json.dumps(summary, indent=2))
+    if summary.get("clips_failed"):
+        raise SystemExit(1)
+
+
 def cmd_pipeline_full(args):
     from ingestion.ingestor import build_tasks
 
@@ -497,6 +518,18 @@ def cmd_render_video(args):
             side_by_side=args.side_by_side_demo,
             video_codec=args.video_codec,
             motion_corridor_overlay=args.motion_corridor_overlay,
+            prediction_overlay_style=args.prediction_overlay_style,
+            hide_uncertainty_circle=args.hide_uncertainty_circle,
+            zoom_occlusion_roi=args.zoom_occlusion_roi,
+            zoom_padding=args.zoom_padding,
+            zoom_min_size=args.zoom_min_size,
+            zoom_follow_prediction=args.zoom_follow_prediction,
+            prediction_overlay_detail=args.prediction_overlay_detail,
+            zoom_reid_recovery=args.zoom_reid_recovery,
+            recovery_zoom_pre_frames=args.recovery_zoom_pre_frames,
+            recovery_zoom_post_frames=args.recovery_zoom_post_frames,
+            recovery_zoom_padding=args.recovery_zoom_padding,
+            recovery_zoom_label_duration=args.recovery_zoom_label_duration,
         )
     print(result)
 
@@ -742,6 +775,27 @@ def build_parser():
     sp.add_argument("--ais", action="store_true", help="Run only the AIS synthetic checks.")
     sp.set_defaults(func=cmd_self_check)
 
+    sp = sub.add_parser(
+        "fvessel-ais-eval",
+        description=(
+            "Evaluate FVessel aligned-clip MMSI identity evidence against raw/canonical MOT. "
+            "AIS remains reporting-only and never changes tracking or ReID decisions."
+        ),
+    )
+    sp.add_argument("--alignment-root", required=True)
+    sp.add_argument("--run-root", required=True)
+    sp.add_argument("--output-dir", required=True)
+    sp.add_argument("--model", required=True)
+    sp.add_argument("--tracker", required=True)
+    sp.add_argument("--live-reid-config", required=True)
+    sp.add_argument("--confirmation-observations", type=int, default=10)
+    sp.add_argument("--min-alignment-confidence", type=float, default=0.10)
+    sp.add_argument("--max-clips", type=int, default=3)
+    sp.add_argument("--include-low-confidence", action="store_true")
+    sp.add_argument("--device", default="cpu")
+    sp.add_argument("--iou-threshold", type=float, default=0.3)
+    sp.set_defaults(func=cmd_fvessel_ais_eval)
+
     sp = sub.add_parser("render-video")
     sp.add_argument("--clip-id")
     sp.add_argument("--source")
@@ -753,6 +807,27 @@ def build_parser():
     sp.add_argument("--occlusion-predictions", help="Optional reporting-only occlusion prediction JSON overlay.")
     sp.add_argument("--side-by-side-demo", action="store_true", help="Render original and annotated video side by side.")
     sp.add_argument("--motion-corridor-overlay", action="store_true", help="Draw directional corridor ellipses/arrows when present.")
+    sp.add_argument(
+        "--prediction-overlay-style",
+        choices=["circle", "arrow", "corridor", "compact"],
+        default="circle",
+        help="Occlusion prediction overlay style. circle preserves the older large uncertainty overlay.",
+    )
+    sp.add_argument(
+        "--hide-uncertainty-circle",
+        action="store_true",
+        help="Suppress the large uncertainty circle and keep compact outlines/corridors only.",
+    )
+    sp.add_argument("--zoom-occlusion-roi", action="store_true", help="Zoom side-by-side right panel around active occlusion predictions.")
+    sp.add_argument("--zoom-padding", type=float, default=1.8)
+    sp.add_argument("--zoom-min-size", type=int, default=360)
+    sp.add_argument("--zoom-follow-prediction", action="store_true")
+    sp.add_argument("--zoom-reid-recovery", action="store_true", help="Prioritize side-by-side zoom around ReID recovery events.")
+    sp.add_argument("--recovery-zoom-pre-frames", type=int, default=30)
+    sp.add_argument("--recovery-zoom-post-frames", type=int, default=90)
+    sp.add_argument("--recovery-zoom-padding", type=float, default=2.0)
+    sp.add_argument("--recovery-zoom-label-duration", type=int, default=90)
+    sp.add_argument("--prediction-overlay-detail", choices=["clean", "debug"], default="debug")
     sp.add_argument(
         "--video-codec",
         choices=["auto", "mp4v", "h264"],

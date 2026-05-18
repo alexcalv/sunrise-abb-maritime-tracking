@@ -57,6 +57,33 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="Video codec for rendered demos. auto prefers Windows-friendly H.264 and falls back clearly.",
     )
+    parser.add_argument(
+        "--prediction-overlay-style",
+        choices=["circle", "arrow", "corridor", "compact"],
+        help=(
+            "Occlusion overlay style. In --demo-mode, defaults to compact; otherwise preserves "
+            "the older circle style unless set explicitly."
+        ),
+    )
+    parser.add_argument(
+        "--hide-uncertainty-circle",
+        action="store_true",
+        help="Suppress the large magenta uncertainty circle and use compact outlines/corridors instead.",
+    )
+    parser.add_argument("--zoom-occlusion-roi", action="store_true", help="Zoom the right demo panel around the active occlusion/recovery area.")
+    parser.add_argument("--zoom-padding", type=float, default=1.8, help="Padding multiplier around the occlusion zoom ROI. Default: 1.8.")
+    parser.add_argument("--zoom-min-size", type=int, default=360, help="Minimum width/height of the occlusion zoom ROI. Default: 360.")
+    parser.add_argument("--zoom-follow-prediction", action="store_true", help="Let the zoom ROI follow the active prediction more closely.")
+    parser.add_argument("--zoom-reid-recovery", action="store_true", help="Prioritize the zoom panel around ReID recovery events after occlusion.")
+    parser.add_argument("--recovery-zoom-pre-frames", type=int, default=30, help="Frames before a ReID recovery event to keep the recovery zoom active.")
+    parser.add_argument("--recovery-zoom-post-frames", type=int, default=90, help="Frames after a ReID recovery event to keep the recovery zoom active.")
+    parser.add_argument("--recovery-zoom-padding", type=float, default=2.0, help="Padding multiplier around the ReID recovery zoom ROI.")
+    parser.add_argument("--recovery-zoom-label-duration", type=int, default=90, help="Frames to keep ReID recovery labels visible.")
+    parser.add_argument(
+        "--prediction-overlay-detail",
+        choices=["clean", "debug"],
+        help="clean hides large uncertainty overlays; debug keeps more corridor/search details.",
+    )
     parser.add_argument("--live-reid", action="store_true", help="Run post-stage bounded-latency ReID.")
     parser.add_argument("--live-reid-in-loop", action="store_true", help="Run tracker-loop bounded-latency ReID v1.")
     parser.add_argument("--live-reid-config", help="Optional ReID config path.")
@@ -250,6 +277,25 @@ def _write_demo_summary(args: argparse.Namespace, result: dict, summary: dict) -
         "rendered_mot_kind": summary.get("rendered_mot_kind"),
         "occlusion_overlay_enabled": bool(summary.get("occlusion_overlay_enabled")),
         "motion_corridor_overlay_enabled": bool(args.motion_corridor_overlay),
+        "prediction_overlay_style": summary.get("prediction_overlay_style"),
+        "uncertainty_circle_hidden": bool(summary.get("uncertainty_circle_hidden")),
+        "motion_arrow_enabled": bool(summary.get("motion_arrow_enabled")),
+        "predicted_bbox_overlay_enabled": bool(summary.get("predicted_bbox_overlay_enabled")),
+        "zoom_occlusion_roi_enabled": bool(summary.get("zoom_occlusion_roi_enabled")),
+        "frames_with_zoom_roi": int(summary.get("frames_with_zoom_roi") or 0),
+        "zoom_padding": summary.get("zoom_padding"),
+        "zoom_min_size": summary.get("zoom_min_size"),
+        "zoom_follow_prediction": bool(summary.get("zoom_follow_prediction")),
+        "zoom_reid_recovery_enabled": bool(summary.get("zoom_reid_recovery_enabled")),
+        "recovery_zoom_event_count": int(summary.get("recovery_zoom_event_count") or 0),
+        "recovery_zoom_pre_frames": int(summary.get("recovery_zoom_pre_frames") or 0),
+        "recovery_zoom_post_frames": int(summary.get("recovery_zoom_post_frames") or 0),
+        "recovery_zoom_active_frames": int(summary.get("recovery_zoom_active_frames") or 0),
+        "recovery_zoom_label_duration": int(summary.get("recovery_zoom_label_duration") or 0),
+        "recovery_events": summary.get("recovery_events") or [],
+        "prediction_overlay_detail": summary.get("prediction_overlay_detail"),
+        "clean_demo_overlay_enabled": bool(summary.get("clean_demo_overlay_enabled")),
+        "large_uncertainty_overlay_enabled": bool(summary.get("large_uncertainty_overlay_enabled")),
         "video_codec_requested": summary.get("video_codec_requested"),
         "video_codec_used": summary.get("video_codec_used"),
         "ffmpeg_transcode_used": bool(summary.get("ffmpeg_transcode_used")),
@@ -276,6 +322,9 @@ def _write_demo_summary(args: argparse.Namespace, result: dict, summary: dict) -
         "occluder_pair_count": int(occlusion_summary.get("occluder_pair_count") or 0),
         "mean_occlusion_pair_confidence": occlusion_summary.get("mean_occlusion_pair_confidence"),
         "corridor_prediction_count": int(occlusion_summary.get("corridor_prediction_count") or 0),
+        "corridor_direction_valid_count": int(occlusion_summary.get("corridor_direction_valid_count") or 0),
+        "corridor_direction_inconsistent_count": int(occlusion_summary.get("corridor_direction_inconsistent_count") or 0),
+        "corridor_direction_unknown_count": int(occlusion_summary.get("corridor_direction_unknown_count") or 0),
         "colreg_diagnostics_enabled": bool(args.colreg_diagnostics),
         "ais_diagnostics_enabled": bool(args.ais_diagnostics),
         "reporting_context_note": "COLREG/AIS diagnostics are reporting-only and do not affect tracking or ReID decisions.",
@@ -294,6 +343,16 @@ def _print_human_summary(summary: dict) -> None:
     print(f"  occlusion predictions: {summary.get('occlusion_predictions') or 'none'}")
     print(f"  rendered video: {summary.get('render_output') or 'none'}")
     print(f"  side-by-side demo: {summary.get('render_output') if summary.get('side_by_side_demo') else 'none'}")
+    print(f"  prediction overlay: {summary.get('prediction_overlay_style') or 'none'}")
+    print(f"  uncertainty circle hidden: {'yes' if summary.get('uncertainty_circle_hidden') else 'no'}")
+    print(f"  zoom occlusion ROI: {'enabled' if summary.get('zoom_occlusion_roi_enabled') else 'disabled'}")
+    if summary.get("zoom_occlusion_roi_enabled"):
+        print(f"  frames with zoom ROI: {summary.get('frames_with_zoom_roi', 0)}")
+        print(f"  overlay detail: {summary.get('prediction_overlay_detail')}")
+    print(f"  ReID recovery zoom: {'enabled' if summary.get('zoom_reid_recovery_enabled') else 'disabled'}")
+    if summary.get("zoom_reid_recovery_enabled"):
+        print(f"  recovery zoom events: {summary.get('recovery_zoom_event_count', 0)}")
+        print(f"  recovery zoom active frames: {summary.get('recovery_zoom_active_frames', 0)}")
     print(f"  video codec: {summary.get('video_codec_used') or 'none'}")
     print(f"  ffmpeg transcode: {'yes' if summary.get('ffmpeg_transcode_used') else 'no'}")
     print(f"  Windows-friendly video: {'yes' if summary.get('windows_friendly_video') else 'no'}")
@@ -311,6 +370,12 @@ def _print_human_summary(summary: dict) -> None:
         print(f"  paired predictions: {summary.get('paired_prediction_count', 0)}")
         print(f"  occluder pairs: {summary.get('occluder_pair_count', 0)}")
         print(f"  mean pair confidence: {summary.get('mean_occlusion_pair_confidence')}")
+        print(
+            "  corridor direction: "
+            f"valid={summary.get('corridor_direction_valid_count', 0)}, "
+            f"inconsistent={summary.get('corridor_direction_inconsistent_count', 0)}, "
+            f"unknown={summary.get('corridor_direction_unknown_count', 0)}"
+        )
     print(f"  detector fusion: {'enabled' if summary.get('detector_fusion_enabled') else 'disabled'}")
     if summary.get("detector_fusion_enabled"):
         print(f"  fusion report: {summary.get('detector_fusion_report')}")
@@ -334,6 +399,14 @@ def main() -> None:
             args.live_reid_in_loop = True
         args.render = True
         args.side_by_side_demo = True
+        if args.prediction_overlay_style is None:
+            args.prediction_overlay_style = "compact"
+        if args.prediction_overlay_detail is None:
+            args.prediction_overlay_detail = "clean"
+    if args.prediction_overlay_style is None:
+        args.prediction_overlay_style = "circle"
+    if args.prediction_overlay_detail is None:
+        args.prediction_overlay_detail = "debug"
 
     from evaluation.metrics import evaluate_mot_dir
     from output.render_video import render_video_from_mot
@@ -396,6 +469,9 @@ def main() -> None:
                 "reid_enabled": bool(result.get("live_reid") or result.get("live_reid_in_loop")),
                 "occlusion_predictions_enabled": bool(occlusion_predictions),
                 "motion_corridor_overlay": bool(args.motion_corridor_overlay),
+                "prediction_overlay_style": args.prediction_overlay_style,
+                "zoom_occlusion_roi": bool(args.zoom_occlusion_roi),
+                "zoom_reid_recovery": bool(args.zoom_reid_recovery),
                 "colreg_diagnostics": bool(args.colreg_diagnostics),
                 "ais_diagnostics": bool(args.ais_diagnostics),
                 "demo_title": args.demo_title,
@@ -403,6 +479,18 @@ def main() -> None:
             },
             video_codec=args.video_codec,
             motion_corridor_overlay=args.motion_corridor_overlay,
+            prediction_overlay_style=args.prediction_overlay_style,
+            hide_uncertainty_circle=args.hide_uncertainty_circle,
+            zoom_occlusion_roi=args.zoom_occlusion_roi,
+            zoom_padding=args.zoom_padding,
+            zoom_min_size=args.zoom_min_size,
+            zoom_follow_prediction=args.zoom_follow_prediction,
+            prediction_overlay_detail=args.prediction_overlay_detail,
+            zoom_reid_recovery=args.zoom_reid_recovery,
+            recovery_zoom_pre_frames=args.recovery_zoom_pre_frames,
+            recovery_zoom_post_frames=args.recovery_zoom_post_frames,
+            recovery_zoom_padding=args.recovery_zoom_padding,
+            recovery_zoom_label_duration=args.recovery_zoom_label_duration,
         )
         result["render"]["rendered_mot_kind"] = mot_kind
         result["render"]["rendered_mot_path"] = str(mot_file)
@@ -436,6 +524,25 @@ def main() -> None:
         "rendered_mot_kind": None,
         "occlusion_overlay_enabled": False,
         "motion_corridor_overlay_enabled": bool(args.motion_corridor_overlay),
+        "prediction_overlay_style": args.prediction_overlay_style,
+        "uncertainty_circle_hidden": bool(args.hide_uncertainty_circle),
+        "motion_arrow_enabled": args.prediction_overlay_style in {"arrow", "corridor", "compact"} or bool(args.motion_corridor_overlay),
+        "predicted_bbox_overlay_enabled": args.prediction_overlay_style in {"arrow", "corridor", "compact"},
+        "zoom_occlusion_roi_enabled": False,
+        "frames_with_zoom_roi": 0,
+        "zoom_padding": args.zoom_padding,
+        "zoom_min_size": args.zoom_min_size,
+        "zoom_follow_prediction": bool(args.zoom_follow_prediction),
+        "zoom_reid_recovery_enabled": False,
+        "recovery_zoom_event_count": 0,
+        "recovery_zoom_pre_frames": args.recovery_zoom_pre_frames,
+        "recovery_zoom_post_frames": args.recovery_zoom_post_frames,
+        "recovery_zoom_active_frames": 0,
+        "recovery_zoom_label_duration": args.recovery_zoom_label_duration,
+        "recovery_events": [],
+        "prediction_overlay_detail": args.prediction_overlay_detail,
+        "clean_demo_overlay_enabled": args.prediction_overlay_detail == "clean",
+        "large_uncertainty_overlay_enabled": args.prediction_overlay_detail != "clean" and not args.hide_uncertainty_circle and args.prediction_overlay_style == "circle",
         "occlusion_predictions_rendered": 0,
         "video_codec_requested": args.video_codec,
         "video_codec_used": None,
@@ -467,6 +574,25 @@ def main() -> None:
         summary["rendered_mot_kind"] = result["render"].get("rendered_mot_kind")
         summary["occlusion_overlay_enabled"] = bool(result["render"].get("occlusion_overlay_enabled"))
         summary["motion_corridor_overlay_enabled"] = bool(result["render"].get("motion_corridor_overlay"))
+        summary["prediction_overlay_style"] = result["render"].get("prediction_overlay_style")
+        summary["uncertainty_circle_hidden"] = bool(result["render"].get("uncertainty_circle_hidden"))
+        summary["motion_arrow_enabled"] = bool(result["render"].get("motion_arrow_enabled"))
+        summary["predicted_bbox_overlay_enabled"] = bool(result["render"].get("predicted_bbox_overlay_enabled"))
+        summary["zoom_occlusion_roi_enabled"] = bool(result["render"].get("zoom_occlusion_roi_enabled"))
+        summary["frames_with_zoom_roi"] = int(result["render"].get("frames_with_zoom_roi") or 0)
+        summary["zoom_padding"] = result["render"].get("zoom_padding")
+        summary["zoom_min_size"] = result["render"].get("zoom_min_size")
+        summary["zoom_follow_prediction"] = bool(result["render"].get("zoom_follow_prediction"))
+        summary["zoom_reid_recovery_enabled"] = bool(result["render"].get("zoom_reid_recovery_enabled"))
+        summary["recovery_zoom_event_count"] = int(result["render"].get("recovery_zoom_event_count") or 0)
+        summary["recovery_zoom_pre_frames"] = int(result["render"].get("recovery_zoom_pre_frames") or 0)
+        summary["recovery_zoom_post_frames"] = int(result["render"].get("recovery_zoom_post_frames") or 0)
+        summary["recovery_zoom_active_frames"] = int(result["render"].get("recovery_zoom_active_frames") or 0)
+        summary["recovery_zoom_label_duration"] = int(result["render"].get("recovery_zoom_label_duration") or 0)
+        summary["recovery_events"] = result["render"].get("recovery_events") or []
+        summary["prediction_overlay_detail"] = result["render"].get("prediction_overlay_detail")
+        summary["clean_demo_overlay_enabled"] = bool(result["render"].get("clean_demo_overlay_enabled"))
+        summary["large_uncertainty_overlay_enabled"] = bool(result["render"].get("large_uncertainty_overlay_enabled"))
         summary["occlusion_predictions_rendered"] = int(result["render"].get("occlusion_predictions_rendered") or 0)
         summary["recovery_event_count"] = int(result["render"].get("recovery_event_count") or 0)
         summary["video_codec_requested"] = result["render"].get("video_codec_requested")
@@ -497,6 +623,9 @@ def main() -> None:
     summary["occluder_pair_count"] = int(occlusion_summary.get("occluder_pair_count") or 0)
     summary["mean_occlusion_pair_confidence"] = occlusion_summary.get("mean_occlusion_pair_confidence")
     summary["corridor_prediction_count"] = int(occlusion_summary.get("corridor_prediction_count") or 0)
+    summary["corridor_direction_valid_count"] = int(occlusion_summary.get("corridor_direction_valid_count") or 0)
+    summary["corridor_direction_inconsistent_count"] = int(occlusion_summary.get("corridor_direction_inconsistent_count") or 0)
+    summary["corridor_direction_unknown_count"] = int(occlusion_summary.get("corridor_direction_unknown_count") or 0)
     fusion_result = result.get("detector_fusion") or {}
     if fusion_result:
         summary["detector_fusion_report"] = fusion_result.get("report_path")

@@ -7,6 +7,8 @@ from typing import Any
 
 @dataclass(frozen=True)
 class MotionState:
+    previous_center_x: float
+    previous_center_y: float
     center_x: float
     center_y: float
     vx: float
@@ -54,17 +56,30 @@ def estimate_motion_state(track_history: list[dict[str, Any]], min_observations:
     latest_x, latest_y = _center(latest)
     _, _, latest_w, latest_h = (float(value) for value in latest["bbox"])
     if len(ordered) < 2:
-        return MotionState(latest_x, latest_y, 0.0, 0.0, 0.0, 0.0, int(latest["frame"]), latest_w, latest_h)
+        return MotionState(
+            previous_center_x=latest_x,
+            previous_center_y=latest_y,
+            center_x=latest_x,
+            center_y=latest_y,
+            vx=0.0,
+            vy=0.0,
+            speed=0.0,
+            heading_deg=0.0,
+            last_frame=int(latest["frame"]),
+            bbox_width=latest_w,
+            bbox_height=latest_h,
+        )
 
-    window = ordered[-max(int(min_observations), 2) :]
-    first = window[0]
-    first_x, first_y = _center(first)
-    frame_delta = max(int(latest["frame"]) - int(first["frame"]), 1)
-    vx = (latest_x - first_x) / frame_delta
-    vy = (latest_y - first_y) / frame_delta
+    previous = ordered[-2]
+    previous_x, previous_y = _center(previous)
+    frame_delta = max(int(latest["frame"]) - int(previous["frame"]), 1)
+    vx = (latest_x - previous_x) / frame_delta
+    vy = (latest_y - previous_y) / frame_delta
     speed = math.hypot(vx, vy)
     heading_deg = math.degrees(math.atan2(vy, vx)) if speed > 1e-6 else 0.0
     return MotionState(
+        previous_center_x=previous_x,
+        previous_center_y=previous_y,
         center_x=latest_x,
         center_y=latest_y,
         vx=vx,
@@ -183,10 +198,26 @@ def build_motion_corridor_prediction(
         "prediction_model": "paired_motion_corridor" if occluder_state is not None else "constant_velocity",
         "velocity_x": round(hidden_state.vx, 6),
         "velocity_y": round(hidden_state.vy, 6),
+        "hidden_velocity_x": round(hidden_state.vx, 6),
+        "hidden_velocity_y": round(hidden_state.vy, 6),
+        "occluder_velocity_x": round(occluder_state.vx, 6) if occluder_state is not None else None,
+        "occluder_velocity_y": round(occluder_state.vy, 6) if occluder_state is not None else None,
         "speed_px_per_frame": round(hidden_state.speed, 6),
         "heading_deg": round(hidden_state.heading_deg, 6),
         "predicted_x": round(predicted_x, 6),
         "predicted_y": round(predicted_y, 6),
+        "last_visible_center": {
+            "x": round(hidden_state.center_x, 6),
+            "y": round(hidden_state.center_y, 6),
+        },
+        "previous_visible_center": {
+            "x": round(hidden_state.previous_center_x, 6),
+            "y": round(hidden_state.previous_center_y, 6),
+        },
+        "predicted_center_from_hidden_velocity": {
+            "x": round(predicted_x, 6),
+            "y": round(predicted_y, 6),
+        },
         "uncertainty_radius": round(max(uncertainty["uncertainty_major_axis"], uncertainty["uncertainty_minor_axis"]), 6),
         **uncertainty,
         "motion_corridor_start": {
@@ -197,6 +228,20 @@ def build_motion_corridor_prediction(
             "x": round(predicted_x, 6),
             "y": round(predicted_y, 6),
         },
+        "arrow_start": {
+            "x": round(hidden_state.center_x, 6),
+            "y": round(hidden_state.center_y, 6),
+        },
+        "arrow_end": {
+            "x": round(predicted_x, 6),
+            "y": round(predicted_y, 6),
+        },
+        "motion_direction_consistency": "unknown" if hidden_state.speed <= 1e-6 else "valid",
+        "corridor_direction_note": (
+            "hidden track speed too small for a reliable arrow"
+            if hidden_state.speed <= 1e-6
+            else "arrow follows hidden-track last visible velocity"
+        ),
         "expected_reappearance_side": reappearance_side,
         "expected_reappearance_frame_min": expected_min,
         "expected_reappearance_frame_max": expected_max,

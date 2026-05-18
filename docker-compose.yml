@@ -34,6 +34,7 @@ services:
       - ./models:/workspace/models
 
   runner:
+    build: .
     image: maritime-tracker:consolidated
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
@@ -46,7 +47,21 @@ services:
     depends_on:
       - redis
     volumes:
+      - ./app:/workspace/app
       - ./data:/workspace/data
       - ./outputs:/workspace/outputs
       - ./config:/workspace/config
       - ./models:/workspace/models
+      - ./tests:/workspace/tests
+
+  # Unit tests (image ENTRYPOINT is scripts.cli; this service overrides to plain python).
+  test:
+    build: .
+    image: maritime-tracker:consolidated
+    entrypoint: ["python", "-m", "unittest"]
+    command: ["discover", "-s", "/workspace/tests", "-p", "test*.py", "-v"]
+    environment:
+      PYTHONPATH: /workspace/app
+    volumes:
+      - ./app:/workspace/app
+      - ./tests:/workspace/tests

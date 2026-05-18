@@ -37,3 +37,16 @@ matching:
     area: 0.2
     aspect: 0.15
     confidence: 0.15
+    ais_position: 0.0
+    ais_identity: 0.0
+
+# Optional AIS augmentation for stitching (disabled by default; core path unchanged).
+ais:
+  enabled: false
+  file_path: null
+  video_fps: null
+  time_offset_ms: 0
+  geo_affine: null
+  max_distance_px: 400.0
+  hard_identity_gate: false
+  neutral_score: 0.5

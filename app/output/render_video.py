@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from evaluation.mot import load_mot_frames
 
@@ -350,6 +351,257 @@ def render_video_from_mot(
         "mot_frames": len(rows_by_frame),
         "fps": resolved_fps,
         "source_fps": capture_fps,
+        "label_mode": label_mode,
+        "codec": codec,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Combined dual-camera video
+# ---------------------------------------------------------------------------
+
+CAMERA_LABEL_FONT = cv2.FONT_HERSHEY_SIMPLEX
+CAMERA_LABEL_SCALE = 0.7
+CAMERA_LABEL_THICKNESS = 2
+CAMERA_LABEL_MARGIN = 10
+
+
+def _annotate_frame(frame, frame_rows: list[dict], label_mode: str) -> None:
+    """Draw all MOT annotations on *frame* in-place."""
+    for row in frame_rows:
+        x, y, w, h = row["bbox"]
+        x1, y1, x2, y2 = _mot_bbox_to_corners(x, y, w, h)
+        _draw_annotation(
+            frame,
+            x1,
+            y1,
+            x2,
+            y2,
+            _track_color(int(row["id"])),
+            _track_label_lines(row, label_mode),
+        )
+
+
+def _pad_to_height(frame, target_height: int):
+    """Centre-pad a frame vertically with black to reach *target_height*."""
+    h = frame.shape[0]
+    if h >= target_height:
+        return frame
+    top = (target_height - h) // 2
+    bottom = target_height - h - top
+    return cv2.copyMakeBorder(frame, top, bottom, 0, 0, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+
+
+def _pad_to_width(frame, target_width: int):
+    """Centre-pad a frame horizontally with black to reach *target_width*."""
+    w = frame.shape[1]
+    if w >= target_width:
+        return frame
+    left = (target_width - w) // 2
+    right = target_width - w - left
+    return cv2.copyMakeBorder(frame, 0, 0, left, right, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+
+
+def _draw_camera_label(frame, label: str) -> None:
+    """Draw a semi-transparent banner with *label* at the top-left of *frame*."""
+    (text_w, text_h), baseline = cv2.getTextSize(
+        label, CAMERA_LABEL_FONT, CAMERA_LABEL_SCALE, CAMERA_LABEL_THICKNESS,
+    )
+    banner_w = text_w + CAMERA_LABEL_MARGIN * 2
+    banner_h = text_h + baseline + CAMERA_LABEL_MARGIN * 2
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (banner_w, banner_h), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+
+    cv2.putText(
+        frame,
+        label,
+        (CAMERA_LABEL_MARGIN, CAMERA_LABEL_MARGIN + text_h),
+        CAMERA_LABEL_FONT,
+        CAMERA_LABEL_SCALE,
+        (255, 255, 255),
+        CAMERA_LABEL_THICKNESS,
+        cv2.LINE_AA,
+    )
+
+
+def _compute_layout(
+    w_a: int,
+    h_a: int,
+    w_b: int,
+    h_b: int,
+    layout: str,
+    target_width: int,
+) -> dict:
+    """Return scaling info for the chosen *layout*."""
+    if layout == "side_by_side_hd":
+        half_w = target_width // 2
+        scale_a = half_w / w_a
+        scale_b = half_w / w_b
+        new_h_a = int(h_a * scale_a)
+        new_h_b = int(h_b * scale_b)
+        combined_h = max(new_h_a, new_h_b)
+        return {
+            "mode": "horizontal",
+            "size_a": (half_w, new_h_a),
+            "size_b": (half_w, new_h_b),
+            "combined": (half_w * 2, combined_h),
+            "divider_x": half_w,
+        }
+
+    if layout == "side_by_side":
+        target_h = max(h_a, h_b)
+        scale_a = target_h / h_a
+        scale_b = target_h / h_b
+        new_w_a = int(w_a * scale_a)
+        new_w_b = int(w_b * scale_b)
+        return {
+            "mode": "horizontal",
+            "size_a": (new_w_a, target_h),
+            "size_b": (new_w_b, target_h),
+            "combined": (new_w_a + new_w_b, target_h),
+            "divider_x": new_w_a,
+        }
+
+    if layout == "top_bottom":
+        target_w = max(w_a, w_b)
+        scale_a = target_w / w_a
+        scale_b = target_w / w_b
+        new_h_a = int(h_a * scale_a)
+        new_h_b = int(h_b * scale_b)
+        return {
+            "mode": "vertical",
+            "size_a": (target_w, new_h_a),
+            "size_b": (target_w, new_h_b),
+            "combined": (target_w, new_h_a + new_h_b),
+            "divider_y": new_h_a,
+        }
+
+    raise ValueError(f"Unknown layout: {layout!r}. Expected side_by_side_hd, side_by_side, or top_bottom.")
+
+
+def render_combined_video_from_mot(
+    source_video_a: str,
+    source_video_b: str,
+    mot_file_a: str,
+    mot_file_b: str,
+    output_video_path: str,
+    fps: float | None = None,
+    label_mode: str = "id",
+    layout: str = "side_by_side_hd",
+    camera_a_label: str = "Camera A",
+    camera_b_label: str = "Camera B",
+    target_width: int = 1920,
+) -> dict:
+    """Render a single video combining two camera feeds side-by-side (or stacked)."""
+    label_mode = _normalize_label_mode(label_mode, default="id")
+
+    path_a = Path(source_video_a)
+    path_b = Path(source_video_b)
+    mot_a = Path(mot_file_a)
+    mot_b = Path(mot_file_b)
+    output_path = Path(output_video_path)
+
+    for p, desc in [(path_a, "Source video A"), (path_b, "Source video B"), (mot_a, "MOT file A"), (mot_b, "MOT file B")]:
+        if not p.exists():
+            raise FileNotFoundError(f"{desc} not found: {p}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    rows_by_frame_a = load_mot_frames(mot_a)
+    rows_by_frame_b = load_mot_frames(mot_b)
+
+    cap_a = cv2.VideoCapture(str(path_a))
+    cap_b = cv2.VideoCapture(str(path_b))
+    if not cap_a.isOpened():
+        raise RuntimeError(f"Could not open source video A: {path_a}")
+    if not cap_b.isOpened():
+        cap_a.release()
+        raise RuntimeError(f"Could not open source video B: {path_b}")
+
+    w_a = int(cap_a.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    h_a = int(cap_a.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    w_b = int(cap_b.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    h_b = int(cap_b.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    fps_a = float(cap_a.get(cv2.CAP_PROP_FPS) or 0.0)
+    fps_b = float(cap_b.get(cv2.CAP_PROP_FPS) or 0.0)
+
+    if w_a <= 0 or h_a <= 0 or w_b <= 0 or h_b <= 0:
+        cap_a.release()
+        cap_b.release()
+        raise RuntimeError(f"Invalid video dimensions: A={w_a}x{h_a}, B={w_b}x{h_b}")
+
+    info = _compute_layout(w_a, h_a, w_b, h_b, layout, target_width)
+    combined_w, combined_h = info["combined"]
+    resolved_fps = _resolve_fps(fps, fallback_fps=max(fps_a, fps_b))
+    writer, codec = _open_video_writer(output_path, resolved_fps, combined_w, combined_h)
+
+    frames_written = 0
+    last_frame_a = None
+    last_frame_b = None
+    frame_index = 1
+
+    while True:
+        ok_a, raw_a = cap_a.read()
+        ok_b, raw_b = cap_b.read()
+
+        if ok_a:
+            last_frame_a = raw_a
+        if ok_b:
+            last_frame_b = raw_b
+
+        if not ok_a and not ok_b:
+            break
+
+        frame_a = last_frame_a
+        frame_b = last_frame_b
+        if frame_a is None or frame_b is None:
+            break
+
+        # Annotate at original resolution (MOT coords are in original pixel space)
+        ann_a = frame_a.copy()
+        ann_b = frame_b.copy()
+        _annotate_frame(ann_a, rows_by_frame_a.get(frame_index, []), label_mode)
+        _annotate_frame(ann_b, rows_by_frame_b.get(frame_index, []), label_mode)
+
+        # Scale
+        scaled_a = cv2.resize(ann_a, info["size_a"], interpolation=cv2.INTER_LINEAR)
+        scaled_b = cv2.resize(ann_b, info["size_b"], interpolation=cv2.INTER_LINEAR)
+
+        if info["mode"] == "horizontal":
+            scaled_a = _pad_to_height(scaled_a, combined_h)
+            scaled_b = _pad_to_height(scaled_b, combined_h)
+            _draw_camera_label(scaled_a, camera_a_label)
+            _draw_camera_label(scaled_b, camera_b_label)
+            combined = np.hstack([scaled_a, scaled_b])
+            cv2.line(combined, (info["divider_x"], 0), (info["divider_x"], combined_h), (200, 200, 200), 2)
+        else:
+            scaled_a = _pad_to_width(scaled_a, combined_w)
+            scaled_b = _pad_to_width(scaled_b, combined_w)
+            _draw_camera_label(scaled_a, camera_a_label)
+            _draw_camera_label(scaled_b, camera_b_label)
+            combined = np.vstack([scaled_a, scaled_b])
+            cv2.line(combined, (0, info["divider_y"]), (combined_w, info["divider_y"]), (200, 200, 200), 2)
+
+        writer.write(combined)
+        frames_written += 1
+        frame_index += 1
+
+    cap_a.release()
+    cap_b.release()
+    writer.release()
+
+    return {
+        "source_video_a": str(path_a),
+        "source_video_b": str(path_b),
+        "mot_file_a": str(mot_a),
+        "mot_file_b": str(mot_b),
+        "output_video": str(output_path),
+        "frames_written": frames_written,
+        "layout": layout,
+        "combined_resolution": f"{combined_w}x{combined_h}",
+        "fps": resolved_fps,
         "label_mode": label_mode,
         "codec": codec,
     }

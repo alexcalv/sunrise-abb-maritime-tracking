@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "sync": {
+    "mode": "frame_index"
+  },
+  "positions": [
+    {
+      "frame": 1,
+      "mmsi": 123456789,
+      "latitude_deg": 59.9139,
+      "longitude_deg": 10.7522,
+      "pixel_x": 640.0,
+      "pixel_y": 360.0,
+      "sog_knots": 12.5,
+      "cog_deg": 187.0
+    },
+    {
+      "frame": 2,
+      "mmsi": 123456789,
+      "latitude_deg": 59.9140,
+      "longitude_deg": 10.7525,
+      "pixel_x": 645.0,
+      "pixel_y": 362.0
+    }
+  ]
+}

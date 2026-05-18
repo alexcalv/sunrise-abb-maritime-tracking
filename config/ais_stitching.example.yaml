@@ -1,0 +1,23 @@
+# Example: enable AIS in offline stitching (copy weights into your stitch config or merge).
+# Requires pixel coordinates (pixel_x/pixel_y or px/py) or geo_affine for lon/lat.
+
+ais:
+  enabled: true
+  file_path: /workspace/config/ais_layer.example.json
+  video_fps: 30.0
+  time_offset_ms: 0
+  max_distance_px: 400.0
+  hard_identity_gate: false
+  neutral_score: 0.5
+
+matching:
+  weights:
+    temporal: 0.12
+    motion: 0.18
+    center: 0.12
+    area: 0.18
+    aspect: 0.12
+    confidence: 0.12
+    appearance: 0.0
+    ais_position: 0.08
+    ais_identity: 0.08

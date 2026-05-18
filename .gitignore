@@ -11,3 +11,4 @@ scripts/*
 !scripts/run_detection.py
 .DS_Store
 runs
+docker-compose.override.yml

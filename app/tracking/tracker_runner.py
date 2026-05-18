@@ -16,11 +16,18 @@ from tracking.visual_continuation import estimate_visual_continuation, update_vi
 from ultralytics import YOLO
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+# Single-file video sources must keep a stable MOT basename matching the video stem.
+# Ultralytics may set result.path to per-frame paths whose stem is not the clip name.
+VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".gif"}
 
 
 def _sequence_name(source: str, result_path: str | None) -> str:
     source_path = Path(source)
     default_name = source_path.stem or source_path.name or "stream"
+
+    if source_path.is_file() and source_path.suffix.lower() in VIDEO_EXTS:
+        return default_name
+
     if result_path is None:
         return default_name
 

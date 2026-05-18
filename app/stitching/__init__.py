@@ -1,4 +1,5 @@
 __all__ = ["OnlineLiveReIDMapper", "stitch_tracks", "stitch_batch", "replay_stitch_tracks"]
+"""Offline track stitching package ."""
 
 
 def __getattr__(name):

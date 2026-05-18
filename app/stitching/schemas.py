@@ -60,9 +60,25 @@ class MatchingWeights:
     aspect: float = 0.15
     confidence: float = 0.15
     appearance: float = 0.0
+    ais_position: float = 0.0
+    ais_identity: float = 0.0
 
     def to_dict(self) -> dict[str, float]:
         return asdict(self)
+
+
+@dataclass
+class AisConfig:
+    """Optional AIS augmentation for offline stitching (disabled by default)."""
+
+    enabled: bool = False
+    file_path: str | None = None
+    video_fps: float | None = None
+    time_offset_ms: int = 0
+    geo_affine: list[list[float]] | None = None
+    max_distance_px: float = 400.0
+    hard_identity_gate: bool = False
+    neutral_score: float = 0.5
 
 
 @dataclass
@@ -149,6 +165,7 @@ class Tracklet:
     head_observations: list[TrackObservation] = field(default_factory=list)
     tail_observations: list[TrackObservation] = field(default_factory=list)
     appearance: dict[str, Any] = field(default_factory=dict)
+    assigned_mmsi: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -191,6 +208,13 @@ class StitchDecision:
     winner_margin_threshold: float | None = None
     source_tail_embedding_ready: bool = False
     target_head_embedding_ready: bool = False
+    ais_source_mmsi: int | None = None
+    ais_target_mmsi: int | None = None
+    ais_position_score: float | None = None
+    ais_identity_score: float | None = None
+    ais_position_distance_px: float | None = None
+    ais_identity_status: str = "ais_disabled"
+    ais_used_in_score: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

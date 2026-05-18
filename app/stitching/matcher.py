@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+from ais.schemas import AIS_NEUTRAL_SCORE, AisAlignedClip
 from stitching.appearance import TrackletAppearanceEmbeddings, cosine_similarity
 from stitching.schemas import StitchConfig, StitchDecision, Tracklet
 
@@ -60,11 +61,25 @@ def _aggregated_score(component_scores: dict[str, float], weights: dict[str, flo
     return _weighted_score(component_scores, selected_weights)
 
 
-def _candidate_weights(config: StitchConfig, include_appearance: bool) -> dict[str, float]:
+def _candidate_weights(
+    config: StitchConfig,
+    include_appearance: bool,
+    include_ais: bool,
+) -> dict[str, float]:
     weights = config.matching.weights.to_dict()
     if not include_appearance:
         weights["appearance"] = 0.0
+    if not include_ais:
+        weights["ais_position"] = 0.0
+        weights["ais_identity"] = 0.0
     return weights
+
+
+def _ais_enabled_in_score(config: StitchConfig) -> bool:
+    if not config.ais.enabled:
+        return False
+    weights = config.matching.weights.to_dict()
+    return float(weights.get("ais_position", 0.0)) > 0 or float(weights.get("ais_identity", 0.0)) > 0
 
 
 def _appearance_threshold(config: StitchConfig) -> float | None:
@@ -165,6 +180,8 @@ def evaluate_candidate(
     new: Tracklet,
     config: StitchConfig,
     appearance_embeddings: dict[str, TrackletAppearanceEmbeddings] | None = None,
+    aligned_clip: AisAlignedClip | None = None,
+    mmsi_assignments: dict[str, int | None] | None = None,
 ) -> StitchDecision:
     gap_frames = max(0, new.frame_start - lost.frame_end - 1)
     elapsed_frames = max(1, new.frame_start - lost.frame_end)
@@ -288,6 +305,34 @@ def evaluate_candidate(
         "short_gap_appearance": short_gap_appearance_passes,
         "long_gap_appearance": long_gap_appearance_passes,
     }
+    neutral = float(config.ais.neutral_score) if config.ais.enabled else AIS_NEUTRAL_SCORE
+    ais_meta: dict[str, float | int | str | bool | None] = {
+        "ais_position": neutral,
+        "ais_identity": neutral,
+        "ais_position_distance_px": None,
+        "ais_source_mmsi": lost.assigned_mmsi,
+        "ais_target_mmsi": new.assigned_mmsi,
+        "ais_identity_status": "ais_disabled",
+        "ais_identity_gate_pass": True,
+    }
+    ais_used_in_score = _ais_enabled_in_score(config)
+    if config.ais.enabled and aligned_clip is not None:
+        from ais.fusion import ais_pair_scores
+
+        ais_meta = ais_pair_scores(
+            lost,
+            new,
+            aligned_clip,
+            mmsi_assignments or {},
+            config.ais,
+        )
+        if not ais_meta.get("ais_identity_gate_pass", True):
+            gating["ais_identity"] = False
+        else:
+            gating["ais_identity"] = True
+    else:
+        gating["ais_identity"] = True
+
     gating["passes_all"] = all(gating.values())
 
     component_scores = {
@@ -298,10 +343,16 @@ def evaluate_candidate(
         "aspect": _delta_score(aspect_ratio_delta, float(config.bbox.max_aspect_ratio_delta)),
         "confidence": _clamp01(mean_confidence_pair),
         "appearance": appearance_score if appearance_score is not None else 0.0,
+        "ais_position": float(ais_meta["ais_position"]),
+        "ais_identity": float(ais_meta["ais_identity"]),
     }
     score = _weighted_score(
         component_scores,
-        _candidate_weights(config, include_appearance=appearance_used_in_score),
+        _candidate_weights(
+            config,
+            include_appearance=appearance_used_in_score,
+            include_ais=ais_used_in_score,
+        ),
     )
     motion_score = _aggregated_score(
         component_scores,
@@ -353,6 +404,13 @@ def evaluate_candidate(
         winner_margin_threshold=_round(winner_margin_threshold),
         source_tail_embedding_ready=tail_embedding is not None,
         target_head_embedding_ready=head_embedding is not None,
+        ais_source_mmsi=ais_meta.get("ais_source_mmsi"),
+        ais_target_mmsi=ais_meta.get("ais_target_mmsi"),
+        ais_position_score=_round(float(ais_meta["ais_position"])),
+        ais_identity_score=_round(float(ais_meta["ais_identity"])),
+        ais_position_distance_px=_round(ais_meta.get("ais_position_distance_px")),
+        ais_identity_status=str(ais_meta.get("ais_identity_status", "ais_disabled")),
+        ais_used_in_score=ais_used_in_score,
     )
 
 
@@ -360,6 +418,8 @@ def match_tracklets(
     tracklets: list[Tracklet],
     config: StitchConfig,
     appearance_embeddings: dict[str, TrackletAppearanceEmbeddings] | None = None,
+    aligned_clip: AisAlignedClip | None = None,
+    mmsi_assignments: dict[str, int | None] | None = None,
 ) -> tuple[list[Tracklet], list[StitchDecision], dict[str, int], int]:
     sorted_tracklets = sorted(
         tracklets,
@@ -383,6 +443,8 @@ def match_tracklets(
                 new_tracklet,
                 config,
                 appearance_embeddings=appearance_embeddings,
+                aligned_clip=aligned_clip,
+                mmsi_assignments=mmsi_assignments,
             )
             decisions.append(decision)
             if decision.gating.get("passes_all", False):

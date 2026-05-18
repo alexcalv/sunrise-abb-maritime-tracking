@@ -1,112 +1,162 @@
 from __future__ import annotations
 
-import math
-from typing import Sequence
+from bisect import bisect_left
 
-from ais.schemas import AisAlignedClip, AisAlignedVesselFrame, AisFix
-
-
-def _lerp(a: float, b: float, t: float) -> float:
-    return a + (b - a) * t
+from .parser import parse_timestamp
+from .types import AisConfig, AisFrameState, AisTrack
 
 
-def _timestamp_to_frame(timestamp_ms: int, *, video_fps: float, time_offset_ms: int) -> int:
-    adjusted = timestamp_ms - int(time_offset_ms)
-    if adjusted < 0:
-        return 1
-    zero_based = int(math.floor((adjusted / 1000.0) * float(video_fps)))
-    return max(1, zero_based + 1)
-
-
-def _frame_to_timestamp_ms(frame: int, *, video_fps: float, time_offset_ms: int) -> int:
-    zero_based = max(0, int(frame) - 1)
-    return int(time_offset_ms + (zero_based / float(video_fps)) * 1000.0)
-
-
-def _apply_geo_affine(
-    lon: float,
-    lat: float,
-    affine: Sequence[Sequence[float]],
-) -> tuple[float, float]:
-    if len(affine) != 2 or len(affine[0]) != 3 or len(affine[1]) != 3:
-        raise ValueError("geo_affine must be 2x3 [[a,b,c],[d,e,f]] mapping lon,lat -> x,y")
-    x = float(affine[0][0]) * lon + float(affine[0][1]) * lat + float(affine[0][2])
-    y = float(affine[1][0]) * lon + float(affine[1][1]) * lat + float(affine[1][2])
-    return x, y
-
-
-def _fix_to_pixel(fix: AisFix, geo_affine: Sequence[Sequence[float]] | None) -> tuple[float, float] | None:
-    if fix.has_pixel():
-        assert fix.pixel_x is not None and fix.pixel_y is not None
-        return fix.pixel_x, fix.pixel_y
-    if fix.has_geo() and geo_affine is not None:
-        assert fix.longitude_deg is not None and fix.latitude_deg is not None
-        return _apply_geo_affine(fix.longitude_deg, fix.latitude_deg, geo_affine)
-    return None
-
-
-def _interpolate_fixes(
-    fixes: list[AisFix],
-    timestamp_ms: int,
-    geo_affine: Sequence[Sequence[float]] | None,
-) -> tuple[float, float] | None:
-    if not fixes:
+def project_lonlat_to_xy(lon: float, lat: float, affine_matrix: list[list[float]] | None) -> tuple[float, float] | None:
+    if affine_matrix is None:
         return None
-    if len(fixes) == 1:
-        return _fix_to_pixel(fixes[0], geo_affine)
-
-    if timestamp_ms <= fixes[0].timestamp_ms:
-        return _fix_to_pixel(fixes[0], geo_affine)
-    if timestamp_ms >= fixes[-1].timestamp_ms:
-        return _fix_to_pixel(fixes[-1], geo_affine)
-
-    for left, right in zip(fixes, fixes[1:]):
-        if left.timestamp_ms <= timestamp_ms <= right.timestamp_ms:
-            if right.timestamp_ms == left.timestamp_ms:
-                return _fix_to_pixel(left, geo_affine)
-            t = (timestamp_ms - left.timestamp_ms) / float(right.timestamp_ms - left.timestamp_ms)
-            left_px = _fix_to_pixel(left, geo_affine)
-            right_px = _fix_to_pixel(right, geo_affine)
-            if left_px is None or right_px is None:
-                return left_px or right_px
-            return _lerp(left_px[0], right_px[0], t), _lerp(left_px[1], right_px[1], t)
+    if len(affine_matrix) == 2 and all(len(row) == 3 for row in affine_matrix):
+        x = (affine_matrix[0][0] * lon) + (affine_matrix[0][1] * lat) + affine_matrix[0][2]
+        y = (affine_matrix[1][0] * lon) + (affine_matrix[1][1] * lat) + affine_matrix[1][2]
+        return float(x), float(y)
+    if len(affine_matrix) == 3 and all(len(row) == 3 for row in affine_matrix):
+        denom = (affine_matrix[2][0] * lon) + (affine_matrix[2][1] * lat) + affine_matrix[2][2]
+        if abs(denom) < 1e-9:
+            return None
+        x = ((affine_matrix[0][0] * lon) + (affine_matrix[0][1] * lat) + affine_matrix[0][2]) / denom
+        y = ((affine_matrix[1][0] * lon) + (affine_matrix[1][1] * lat) + affine_matrix[1][2]) / denom
+        return float(x), float(y)
     return None
 
 
-def build_aligned_clip(
-    fixes_by_mmsi: dict[int, list[AisFix]],
-    *,
-    max_frame: int,
-    video_fps: float,
-    time_offset_ms: int = 0,
-    geo_affine: Sequence[Sequence[float]] | None = None,
-) -> AisAlignedClip:
-    if max_frame < 1:
-        max_frame = 1
-    if video_fps <= 0:
-        raise ValueError("video_fps must be positive for AIS alignment")
+def _lerp(left: float | None, right: float | None, ratio: float) -> float | None:
+    if left is None or right is None:
+        return left if ratio <= 0.5 else right
+    return float(left) + ((float(right) - float(left)) * float(ratio))
 
-    frames: dict[int, dict[int, AisAlignedVesselFrame]] = {}
-    for frame in range(1, max_frame + 1):
-        ts = _frame_to_timestamp_ms(frame, video_fps=video_fps, time_offset_ms=time_offset_ms)
-        frame_vessels: dict[int, AisAlignedVesselFrame] = {}
-        for mmsi, track in fixes_by_mmsi.items():
-            px = _interpolate_fixes(track, ts, geo_affine)
-            if px is None:
-                continue
-            interpolated = not any(f.timestamp_ms == ts for f in track)
-            frame_vessels[mmsi] = AisAlignedVesselFrame(
-                mmsi=mmsi,
-                pixel_x=px[0],
-                pixel_y=px[1],
-                interpolated=interpolated,
-            )
-        if frame_vessels:
-            frames[frame] = frame_vessels
 
-    return AisAlignedClip(
-        frames=frames,
-        max_frame=max_frame,
-        video_fps=float(video_fps),
-        time_offset_ms=int(time_offset_ms),
+def _record_xy(record: object, config: AisConfig) -> tuple[float | None, float | None]:
+    x = getattr(record, "x", None)
+    y = getattr(record, "y", None)
+    if x is not None and y is not None:
+        return float(x), float(y)
+    lon = getattr(record, "lon", None)
+    lat = getattr(record, "lat", None)
+    if lon is not None and lat is not None and bool(config.affine_enabled):
+        projected = project_lonlat_to_xy(float(lon), float(lat), config.affine_matrix)
+        if projected is not None:
+            return projected
+    return None, None
+
+
+def _interpolate(track: AisTrack, timestamp: float, config: AisConfig) -> AisFrameState | None:
+    records = track.records
+    if not records:
+        return None
+    times = [float(record.timestamp or 0.0) for record in records]
+    index = bisect_left(times, timestamp)
+    if index == 0:
+        nearest = records[0]
+        if abs(float(nearest.timestamp or 0.0) - timestamp) > float(config.max_time_gap_seconds):
+            return None
+        x, y = _record_xy(nearest, config)
+        return AisFrameState(
+            frame=0,
+            timestamp=timestamp,
+            mmsi=track.mmsi,
+            x=x,
+            y=y,
+            lat=nearest.lat,
+            lon=nearest.lon,
+            sog=nearest.sog,
+            cog=nearest.cog,
+            heading=nearest.heading,
+            interpolated=False,
+            position_available=x is not None and y is not None,
+            reason="nearest_first_record",
+        )
+    if index >= len(records):
+        nearest = records[-1]
+        if abs(timestamp - float(nearest.timestamp or 0.0)) > float(config.max_time_gap_seconds):
+            return None
+        x, y = _record_xy(nearest, config)
+        return AisFrameState(
+            frame=0,
+            timestamp=timestamp,
+            mmsi=track.mmsi,
+            x=x,
+            y=y,
+            lat=nearest.lat,
+            lon=nearest.lon,
+            sog=nearest.sog,
+            cog=nearest.cog,
+            heading=nearest.heading,
+            interpolated=False,
+            position_available=x is not None and y is not None,
+            reason="nearest_last_record",
+        )
+
+    left = records[index - 1]
+    right = records[index]
+    left_time = float(left.timestamp or 0.0)
+    right_time = float(right.timestamp or 0.0)
+    if min(abs(timestamp - left_time), abs(right_time - timestamp)) > float(config.max_time_gap_seconds):
+        return None
+    span = max(right_time - left_time, 1e-9)
+    ratio = (timestamp - left_time) / span
+    left_x, left_y = _record_xy(left, config)
+    right_x, right_y = _record_xy(right, config)
+    x = _lerp(left_x, right_x, ratio)
+    y = _lerp(left_y, right_y, ratio)
+    return AisFrameState(
+        frame=0,
+        timestamp=timestamp,
+        mmsi=track.mmsi,
+        x=x,
+        y=y,
+        lat=_lerp(left.lat, right.lat, ratio),
+        lon=_lerp(left.lon, right.lon, ratio),
+        sog=_lerp(left.sog, right.sog, ratio),
+        cog=_lerp(left.cog, right.cog, ratio),
+        heading=_lerp(left.heading, right.heading, ratio),
+        interpolated=True,
+        position_available=x is not None and y is not None,
+        reason="interpolated",
     )
+
+
+def align_ais_tracks_to_frames(
+    ais_tracks: dict[str, AisTrack],
+    frame_count: int,
+    fps: float | None,
+    video_start_time: str | float | int | None,
+    config: AisConfig,
+) -> dict[int, list[AisFrameState]]:
+    if not ais_tracks or frame_count <= 0:
+        return {}
+    resolved_fps = float(fps or config.fps or 30.0)
+    if resolved_fps <= 0:
+        resolved_fps = 30.0
+
+    start_time = parse_timestamp(video_start_time if video_start_time is not None else config.video_start_time)
+    if start_time is None:
+        timestamps = [
+            float(record.timestamp or 0.0)
+            for track in ais_tracks.values()
+            for record in track.records
+            if record.timestamp is not None
+        ]
+        start_time = min(timestamps) if timestamps else 0.0
+
+    aligned: dict[int, list[AisFrameState]] = {}
+    for frame in range(1, int(frame_count) + 1):
+        timestamp = float(start_time) + ((frame - 1) / resolved_fps)
+        states: list[AisFrameState] = []
+        for track in ais_tracks.values():
+            state = _interpolate(track, timestamp, config)
+            if state is not None:
+                states.append(
+                    AisFrameState(
+                        **{
+                            **state.to_dict(),
+                            "frame": int(frame),
+                        }
+                    )
+                )
+        if states:
+            aligned[frame] = states
+    return aligned

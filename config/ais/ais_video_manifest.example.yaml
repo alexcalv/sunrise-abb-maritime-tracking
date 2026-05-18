@@ -1,0 +1,21 @@
+# Example AIS/video alignment manifest.
+# Copy this file for a real run and replace the placeholder paths/metadata.
+video_id: cutXX_example
+video_file: /workspace/data/videos/cutXX.mp4
+mot_file: /workspace/outputs/track/example_run/mot/cutXX.txt
+ais_file: /workspace/data/ais/cutXX_ais.csv
+fps: 30.0
+video_start_time: "2026-05-14T12:00:00Z"
+timestamp_timezone: UTC
+time_offset_seconds: 0.0
+
+# Supported values:
+# - preprojected_xy: AIS file already contains image-plane x/y columns.
+# - affine_lonlat: AIS file contains lon/lat and affine_matrix projects to image x/y.
+# - unknown: metadata is incomplete; diagnostics can parse AIS but spatial validation is unavailable.
+projection_type: preprojected_xy
+affine_matrix:
+
+expected_mmsi: []
+synthetic: false
+notes: "Replace placeholders with real AIS, video timing, and projection metadata before validation."

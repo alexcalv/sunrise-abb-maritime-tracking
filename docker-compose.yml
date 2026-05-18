@@ -30,6 +30,7 @@ services:
     volumes:
       - ./data:/workspace/data
       - ./outputs:/workspace/outputs
+      - ./outputs_v2:/workspace/outputs_v2
       - ./config:/workspace/config
       - ./models:/workspace/models
 
@@ -50,6 +51,7 @@ services:
       - ./app:/workspace/app
       - ./data:/workspace/data
       - ./outputs:/workspace/outputs
+      - ./outputs_v2:/workspace/outputs_v2
       - ./config:/workspace/config
       - ./models:/workspace/models
       - ./tests:/workspace/tests

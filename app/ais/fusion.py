@@ -1,124 +1,176 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from collections import defaultdict
+from typing import Any
 
-from ais.schemas import AIS_NEUTRAL_SCORE, AisAlignedClip, AisAlignedVesselFrame
-
-if TYPE_CHECKING:
-    from stitching.schemas import AisConfig, Tracklet
+from .types import AisAssignment, AisConfig, AisFrameState
 
 
-def _distance_xy(a: list[float], b: tuple[float, float]) -> float:
-    return math.hypot(float(a[0]) - b[0], float(a[1]) - b[1])
+def _center(row: dict[str, Any]) -> tuple[float, float]:
+    x, y, w, h = row["bbox"]
+    return float(x) + (float(w) / 2.0), float(y) + (float(h) / 2.0)
 
 
-def _position_score(distance: float, max_distance_px: float) -> float:
-    if max_distance_px <= 0:
-        return AIS_NEUTRAL_SCORE
-    return max(0.0, min(1.0, 1.0 - (distance / max_distance_px)))
+def _group_mot(rows: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[int(row["id"])].append(row)
+    return {track_id: sorted(track_rows, key=lambda row: int(row["frame"])) for track_id, track_rows in grouped.items()}
 
 
-def assign_mmsi_per_tracklet(
-    tracklets: list[Tracklet],
-    aligned: AisAlignedClip,
-    *,
-    max_distance_px: float,
-) -> dict[str, int | None]:
-    """
-    One MMSI per tracklet (stateless upfront assignment from overlap with aligned AIS).
-    """
-    assignments: dict[str, int | None] = {}
-    for tracklet in tracklets:
-        best_mmsi: int | None = None
-        best_dist = float("inf")
-        sample_frames = sorted({tracklet.frame_start, tracklet.frame_end, (tracklet.frame_start + tracklet.frame_end) // 2})
-        for frame in sample_frames:
-            vessels = aligned.vessels_at(frame)
-            if not vessels:
-                continue
-            center = tracklet.end_center if frame >= tracklet.frame_end else tracklet.start_center
-            for mmsi, vessel in vessels.items():
-                d = _distance_xy(center, (vessel.pixel_x, vessel.pixel_y))
-                if d < best_dist:
-                    best_dist = d
-                    best_mmsi = mmsi
-        if best_mmsi is not None and best_dist <= max_distance_px:
-            assignments[tracklet.tracklet_id] = best_mmsi
-        else:
-            assignments[tracklet.tracklet_id] = None
-    return assignments
+def _angle_diff(a: float | None, b: float | None) -> float | None:
+    if a is None or b is None:
+        return None
+    diff = (float(a) - float(b) + 180.0) % 360.0 - 180.0
+    return abs(diff)
 
 
-def score_ais_position(
-    center: list[float],
-    frame: int,
-    mmsi: int | None,
-    aligned: AisAlignedClip | None,
-    *,
-    max_distance_px: float,
-    neutral_score: float = AIS_NEUTRAL_SCORE,
-) -> tuple[float, float | None, int | None]:
-    if aligned is None or mmsi is None:
-        return neutral_score, None, mmsi
-    vessel = aligned.vessel_at(frame, mmsi)
-    if vessel is None:
-        return neutral_score, None, mmsi
-    dist = _distance_xy(center, (vessel.pixel_x, vessel.pixel_y))
-    return _position_score(dist, max_distance_px), dist, mmsi
+def _track_heading_speed(rows: list[dict[str, Any]]) -> tuple[float | None, float | None]:
+    if len(rows) < 2:
+        return None, None
+    start = rows[0]
+    end = rows[-1]
+    start_x, start_y = _center(start)
+    end_x, end_y = _center(end)
+    delta_frames = max(int(end["frame"]) - int(start["frame"]), 1)
+    dx = (end_x - start_x) / delta_frames
+    dy = (end_y - start_y) / delta_frames
+    speed = math.hypot(dx, dy)
+    if speed < 1e-9:
+        return None, 0.0
+    heading = math.degrees(math.atan2(dy, dx)) % 360.0
+    return heading, speed
 
 
-def score_ais_identity(
-    source_mmsi: int | None,
-    target_mmsi: int | None,
-    *,
-    hard_gate: bool,
-    neutral_score: float = AIS_NEUTRAL_SCORE,
-) -> tuple[float, bool, str]:
-    """
-  Returns (score, gate_pass, status).
-  Missing AIS on either side -> neutral 0.5, gate passes.
-  Both present and equal -> 1.0; mismatch -> 0.0 (soft) or gate fail (hard).
-    """
-    if source_mmsi is None or target_mmsi is None:
-        return neutral_score, True, "ais_missing"
-    if source_mmsi == target_mmsi:
-        return 1.0, True, "mmsi_match"
-    if hard_gate:
-        return 0.0, False, "mmsi_hard_mismatch"
-    return 0.0, True, "mmsi_soft_mismatch"
+def _score_distance(distance: float, max_distance: float) -> float:
+    if max_distance <= 0:
+        return 0.5
+    return max(0.0, min(1.0, 1.0 - (float(distance) / float(max_distance))))
 
 
-def ais_pair_scores(
-    lost: Tracklet,
-    new: Tracklet,
-    aligned: AisAlignedClip | None,
-    assignments: dict[str, int | None],
+def _avg(values: list[float]) -> float:
+    return round(sum(values) / len(values), 6) if values else 0.5
+
+
+def _states_by_mmsi(aligned_ais: dict[int, list[AisFrameState]]) -> dict[str, dict[int, AisFrameState]]:
+    grouped: dict[str, dict[int, AisFrameState]] = defaultdict(dict)
+    for frame, states in aligned_ais.items():
+        for state in states:
+            grouped[str(state.mmsi)][int(frame)] = state
+    return grouped
+
+
+def _assignment_for_pair(
+    track_id: int,
+    mot_rows: list[dict[str, Any]],
+    mmsi: str,
+    ais_by_frame: dict[int, AisFrameState],
     config: AisConfig,
-) -> dict[str, float | int | str | bool | None]:
-    src_mmsi = assignments.get(lost.tracklet_id)
-    tgt_mmsi = assignments.get(new.tracklet_id)
-    neutral = float(config.neutral_score)
-    pos_score, pos_dist, _ = score_ais_position(
-        new.start_center,
-        new.frame_start,
-        tgt_mmsi,
-        aligned,
-        max_distance_px=config.max_distance_px,
-        neutral_score=neutral,
+) -> AisAssignment:
+    overlap_frames = sorted(set(int(row["frame"]) for row in mot_rows) & set(ais_by_frame))
+    if not overlap_frames:
+        return AisAssignment(
+            track_id=track_id,
+            assigned_mmsi=None,
+            score=float(config.neutral_score),
+            overlap_frames=0,
+            position_score=float(config.neutral_score),
+            heading_score=float(config.neutral_score),
+            speed_score=float(config.neutral_score),
+            identity_score=float(config.neutral_score),
+            missing_reason="no_temporal_overlap",
+        )
+
+    row_by_frame = {int(row["frame"]): row for row in mot_rows}
+    position_scores: list[float] = []
+    ais_positions = 0
+    for frame in overlap_frames:
+        state = ais_by_frame[frame]
+        if state.x is None or state.y is None:
+            continue
+        mot_x, mot_y = _center(row_by_frame[frame])
+        position_scores.append(_score_distance(math.hypot(mot_x - float(state.x), mot_y - float(state.y)), config.max_position_distance_px))
+        ais_positions += 1
+    position_score = _avg(position_scores) if position_scores else float(config.neutral_score)
+
+    mot_heading, mot_speed = _track_heading_speed([row_by_frame[frame] for frame in overlap_frames])
+    heading_values = [state.heading if state.heading is not None else state.cog for frame in overlap_frames for state in [ais_by_frame[frame]]]
+    heading_values = [float(value) for value in heading_values if value is not None]
+    heading_score = float(config.neutral_score)
+    if mot_heading is not None and heading_values:
+        heading_diff = _angle_diff(mot_heading, sum(heading_values) / len(heading_values))
+        heading_score = 0.5 if heading_diff is None else max(0.0, min(1.0, 1.0 - (heading_diff / 180.0)))
+
+    speed_score = float(config.neutral_score)
+    if mot_speed is not None and ais_positions >= 2:
+        first_state = ais_by_frame[overlap_frames[0]]
+        last_state = ais_by_frame[overlap_frames[-1]]
+        if first_state.x is not None and first_state.y is not None and last_state.x is not None and last_state.y is not None:
+            frame_delta = max(overlap_frames[-1] - overlap_frames[0], 1)
+            ais_speed_px = math.hypot(float(last_state.x) - float(first_state.x), float(last_state.y) - float(first_state.y)) / frame_delta
+            denom = max(float(mot_speed), float(ais_speed_px), 1e-9)
+            speed_score = max(0.0, min(1.0, 1.0 - (abs(float(mot_speed) - float(ais_speed_px)) / denom)))
+
+    overlap_score = max(0.0, min(1.0, len(overlap_frames) / max(int(config.min_track_overlap_frames), 1)))
+    score = _avg([position_score, heading_score, speed_score, overlap_score])
+    missing: list[str] = []
+    if not position_scores:
+        missing.append("ais_pixel_position_unavailable")
+    if not heading_values:
+        missing.append("ais_heading_unavailable")
+    return AisAssignment(
+        track_id=track_id,
+        assigned_mmsi=mmsi if score >= float(config.assignment_min_score) else None,
+        score=score,
+        overlap_frames=len(overlap_frames),
+        position_score=round(position_score, 6),
+        heading_score=round(heading_score, 6),
+        speed_score=round(speed_score, 6),
+        identity_score=1.0 if score >= float(config.assignment_min_score) else float(config.neutral_score),
+        missing_reason=";".join(missing) if missing else "",
+        component_notes={
+            "raw_mmsi": mmsi,
+            "overlap_score": round(overlap_score, 6),
+            "assignment_threshold": float(config.assignment_min_score),
+        },
     )
-    id_score, id_gate, id_status = score_ais_identity(
-        src_mmsi,
-        tgt_mmsi,
-        hard_gate=config.hard_identity_gate,
-        neutral_score=neutral,
-    )
-    return {
-        "ais_position": pos_score,
-        "ais_identity": id_score,
-        "ais_position_distance_px": pos_dist,
-        "ais_source_mmsi": src_mmsi,
-        "ais_target_mmsi": tgt_mmsi,
-        "ais_identity_status": id_status,
-        "ais_identity_gate_pass": id_gate,
-    }
+
+
+def assign_ais_to_tracks(
+    mot_tracks: dict[int, list[dict[str, Any]]] | list[dict[str, Any]],
+    aligned_ais: dict[int, list[AisFrameState]],
+    config: AisConfig,
+) -> list[AisAssignment]:
+    tracks = _group_mot(mot_tracks) if isinstance(mot_tracks, list) else mot_tracks
+    ais_by_mmsi = _states_by_mmsi(aligned_ais)
+    assignments: list[AisAssignment] = []
+    for track_id, rows in sorted(tracks.items()):
+        if not ais_by_mmsi:
+            assignments.append(
+                AisAssignment(
+                    track_id=int(track_id),
+                    assigned_mmsi=None,
+                    score=float(config.neutral_score),
+                    overlap_frames=0,
+                    position_score=float(config.neutral_score),
+                    heading_score=float(config.neutral_score),
+                    speed_score=float(config.neutral_score),
+                    identity_score=float(config.neutral_score),
+                    missing_reason="no_ais_coverage",
+                )
+            )
+            continue
+        candidates = [
+            _assignment_for_pair(int(track_id), rows, mmsi, states, config)
+            for mmsi, states in ais_by_mmsi.items()
+        ]
+        candidates.sort(
+            key=lambda item: (
+                -float(item.score),
+                str(item.assigned_mmsi or (item.component_notes or {}).get("raw_mmsi", "")),
+            )
+        )
+        best = candidates[0]
+        assignments.append(best)
+    return assignments

@@ -1,10 +1,14 @@
 data
 outputs
+outputs_v2
 .idea/
 tmp_eval_frames/
 tmp_zip_branch/
 models/
 __pycache__/
-scripts
+scripts/*
+!scripts/cli.py
+!scripts/run_detection.py
 .DS_Store
+runs
 docker-compose.override.yml

@@ -2,138 +2,150 @@ from __future__ import annotations
 
 import csv
 import json
-import math
+from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ais.schemas import AisFix
+from .types import AisConfig, AisRecord, AisTrack
 
 
-def _as_float(value: Any, field: str) -> float:
+def _normalize_key(value: str) -> str:
+    return str(value).strip().lower().replace(" ", "_")
+
+
+def _column_map(row: dict[str, Any]) -> dict[str, Any]:
+    return {_normalize_key(key): value for key, value in row.items()}
+
+
+def _parse_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text == "":
+        return None
     try:
-        return float(value)
-    except (TypeError, ValueError) as e:
-        raise ValueError(f"AIS field {field!r} must be numeric, got {value!r}") from e
+        return float(text)
+    except ValueError:
+        return None
 
 
-def _as_int(value: Any, field: str) -> int:
+def parse_timestamp(value: Any) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text == "":
+        return None
     try:
-        return int(value)
-    except (TypeError, ValueError) as e:
-        raise ValueError(f"AIS field {field!r} must be integral, got {value!r}") from e
+        return float(text)
+    except ValueError:
+        pass
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
-def _parse_fix_row(row: dict[str, Any], *, default_timestamp_ms: int | None = None) -> AisFix:
-    mmsi = _as_int(row.get("mmsi"), "mmsi")
-    ts_raw = row.get("timestamp_ms")
-    if ts_raw is not None:
-        timestamp_ms = _as_int(ts_raw, "timestamp_ms")
-    elif row.get("frame") is not None and default_timestamp_ms is not None:
-        # frame-only rows resolved by caller
-        raise ValueError("internal: use frame_index parser for frame-only rows")
-    elif default_timestamp_ms is not None:
-        timestamp_ms = default_timestamp_ms
-    else:
-        raise ValueError('AIS row requires "timestamp_ms" or "frame" with sync context')
+def parse_affine_matrix(value: str | list[list[float]] | None) -> list[list[float]] | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, list):
+        return [[float(item) for item in row] for row in value]
+    text = str(value).strip()
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return [[float(item) for item in row] for row in parsed]
+    except json.JSONDecodeError:
+        pass
+    parts = [float(part.strip()) for part in text.replace(";", ",").split(",") if part.strip()]
+    if len(parts) == 6:
+        return [parts[:3], parts[3:]]
+    if len(parts) == 9:
+        return [parts[:3], parts[3:6], parts[6:]]
+    raise ValueError("Affine matrix must contain 6 or 9 numeric values.")
 
-    lat = row.get("latitude_deg")
-    lon = row.get("longitude_deg")
-    px = row.get("pixel_x", row.get("px"))
-    py = row.get("pixel_y", row.get("py"))
-    sog = row.get("sog_knots")
-    cog = row.get("cog_deg")
 
-    return AisFix(
-        mmsi=mmsi,
-        timestamp_ms=timestamp_ms,
-        latitude_deg=float(lat) if lat is not None else None,
-        longitude_deg=float(lon) if lon is not None else None,
-        pixel_x=float(px) if px is not None else None,
-        pixel_y=float(py) if py is not None else None,
-        sog_knots=float(sog) if sog is not None else None,
-        cog_deg=float(cog) if cog is not None else None,
+def _record_from_row(row: dict[str, Any], config: AisConfig) -> AisRecord | None:
+    normalized = _column_map(row)
+    def get(column_name: str) -> Any:
+        return normalized.get(_normalize_key(column_name))
+
+    mmsi = get(config.mmsi_column)
+    if mmsi is None or str(mmsi).strip() == "":
+        return None
+    return AisRecord(
+        mmsi=str(mmsi).strip(),
+        timestamp=parse_timestamp(get(config.timestamp_column)),
+        lat=_parse_float(get(config.lat_column)),
+        lon=_parse_float(get(config.lon_column)),
+        x=_parse_float(get(config.x_column)),
+        y=_parse_float(get(config.y_column)),
+        sog=_parse_float(get(config.sog_column)),
+        cog=_parse_float(get(config.cog_column)),
+        heading=_parse_float(get(config.heading_column)),
+        raw=dict(row),
     )
 
 
-def _frame_to_timestamp_ms(frame: int, *, video_fps: float, time_offset_ms: int) -> int:
-    zero_based = max(0, int(frame) - 1)
-    return int(time_offset_ms + (zero_based / float(video_fps)) * 1000.0)
+def _json_records(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [dict(item) for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        records: list[dict[str, Any]] = []
+        for key, value in payload.items():
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        row = dict(item)
+                        row.setdefault("mmsi", key)
+                        records.append(row)
+            elif isinstance(value, dict):
+                row = dict(value)
+                row.setdefault("mmsi", key)
+                records.append(row)
+        return records
+    return []
 
 
-def fixes_from_json_dict(data: dict[str, Any], *, video_fps: float | None) -> list[AisFix]:
-    version = int(data.get("version", 1))
-    if version != 1:
-        raise ValueError(f"Unsupported AIS JSON version: {version}")
+def load_ais_file_with_warnings(path: str | Path, config: AisConfig) -> tuple[dict[str, AisTrack], list[str]]:
+    ais_path = Path(path)
+    if not ais_path.exists():
+        raise FileNotFoundError(f"AIS file not found: {ais_path}")
 
-    sync = dict(data.get("sync") or {})
-    mode = str(sync.get("mode", "timestamp_ms"))
-    time_offset_ms = int(sync.get("time_offset_ms", 0))
-    positions_raw = data.get("positions")
-    if not isinstance(positions_raw, list):
-        raise ValueError('AIS JSON must contain a list "positions"')
-
-    fixes: list[AisFix] = []
-
-    if mode == "frame_index":
-        if video_fps is None or video_fps <= 0:
-            raise ValueError("frame_index sync requires positive video_fps")
-        for idx, row in enumerate(positions_raw):
-            if not isinstance(row, dict):
-                raise ValueError(f"AIS positions[{idx}] must be an object")
-            frame = _as_int(row.get("frame"), "frame")
-            if frame < 1:
-                raise ValueError(f"AIS frame must be >= 1, got {frame}")
-            ts = _frame_to_timestamp_ms(frame, video_fps=float(video_fps), time_offset_ms=time_offset_ms)
-            row_with_ts = {**row, "timestamp_ms": ts}
-            fixes.append(_parse_fix_row(row_with_ts))
-    elif mode == "timestamp_ms":
-        for idx, row in enumerate(positions_raw):
-            if not isinstance(row, dict):
-                raise ValueError(f"AIS positions[{idx}] must be an object")
-            fixes.append(_parse_fix_row(row))
+    suffix = ais_path.suffix.lower()
+    input_format = str(config.input_format or "auto").lower()
+    rows: list[dict[str, Any]]
+    if input_format == "json" or (input_format == "auto" and suffix == ".json"):
+        rows = _json_records(json.loads(ais_path.read_text(encoding="utf-8")))
     else:
-        raise ValueError(f"Unsupported AIS sync.mode: {mode!r}")
+        with ais_path.open("r", newline="", encoding="utf-8") as handle:
+            rows = [dict(row) for row in csv.DictReader(handle)]
 
-    return fixes
+    warnings: list[str] = []
+    grouped: dict[str, list[AisRecord]] = defaultdict(list)
+    for index, row in enumerate(rows, start=1):
+        record = _record_from_row(row, config)
+        if record is None:
+            warnings.append(f"row {index}: missing MMSI")
+            continue
+        if record.timestamp is None:
+            warnings.append(f"row {index}: missing or invalid timestamp")
+            continue
+        grouped[record.mmsi].append(record)
 
-
-def fixes_from_csv_path(path: Path) -> list[AisFix]:
-    fixes: list[AisFix] = []
-    with path.open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames is None:
-            raise ValueError(f"AIS CSV has no header: {path}")
-        for line_num, row in enumerate(reader, start=2):
-            if not row:
-                continue
-            try:
-                fixes.append(_parse_fix_row(row))
-            except ValueError as e:
-                raise ValueError(f"AIS CSV {path} line {line_num}: {e}") from e
-    return fixes
-
-
-def load_ais_fixes(
-    path: Path,
-    *,
-    video_fps: float | None = None,
-) -> list[AisFix]:
-    path = path.resolve()
-    suffix = path.suffix.lower()
-    if suffix == ".csv":
-        return fixes_from_csv_path(path)
-    if suffix in {".json", ".geojson"}:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError(f"AIS file must contain a JSON object: {path}")
-        return fixes_from_json_dict(data, video_fps=video_fps)
-    raise ValueError(f"Unsupported AIS file type: {suffix} (use .csv or .json)")
+    tracks = {
+        mmsi: AisTrack(mmsi=mmsi, records=sorted(records, key=lambda record: float(record.timestamp or 0.0)))
+        for mmsi, records in sorted(grouped.items())
+        if records
+    }
+    return tracks, warnings
 
 
-def group_fixes_by_mmsi(fixes: list[AisFix]) -> dict[int, list[AisFix]]:
-    grouped: dict[int, list[AisFix]] = {}
-    for fix in fixes:
-        grouped.setdefault(fix.mmsi, []).append(fix)
-    for mmsi in grouped:
-        grouped[mmsi].sort(key=lambda f: f.timestamp_ms)
-    return grouped
+def load_ais_file(path: str | Path, config: AisConfig) -> dict[str, AisTrack]:
+    tracks, _ = load_ais_file_with_warnings(path, config)
+    return tracks

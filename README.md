@@ -117,6 +117,10 @@ For the optional paired-vessel motion corridor overlay, add:
 
 This estimates a likely occluding ship, directional uncertainty, and expected reappearance side when the geometry is clear enough. It remains visualization/reporting only.
 
+Demo mode uses the compact occlusion overlay by default: a predicted ship box, direction arrow, and light corridor/outline instead of a large magenta uncertainty circle. The older circle view is still available with `--prediction-overlay-style circle` for debugging. Overlay style changes are visualization-only and do not change tracking or ReID.
+
+For presentation clips, add `--zoom-occlusion-roi --prediction-overlay-detail clean`. The left panel keeps the full scene for context, while the right panel zooms into the active occlusion/recovery area. Add `--zoom-reid-recovery` when you want the zoom panel to prioritize the moment a new raw tracker ID appears and ReID links it back to the same ship. This is only a rendering aid; it does not affect tracking, ReID, raw MOT, or canonical MOT.
+
 Hard-case demo batches can be generated under `outputs_v2/partial_occlusion_batches/`. These runs are useful for inspecting partial occlusion, drift, and crowded ambiguity, but visual continuation remains reporting/visualization only and should not change raw or canonical MOT output.
 
 Demo videos default to `--video-codec auto`, which tries to produce a Windows-friendly H.264 MP4. If Windows Media Player Legacy still refuses a file, VLC should open it; you can also rerun with `--video-codec h264` to require the H.264 path when OpenCV or ffmpeg supports it.
@@ -260,6 +264,23 @@ docker compose run --rm runner reid-regression --output-dir /workspace/outputs/d
 COLREG is image-plane context, not legal navigation compliance. It can add encounter and motion-prior fields to reports. A narrow scoring experiment exists, but it is disabled by default and is not recommended as active scoring yet.
 
 AIS support can parse CSV/JSON, align AIS to frames, and softly assign MMSIs to MOT tracks. It supports pre-projected `x`/`y`, or `lon`/`lat` with an affine matrix. No real AIS files are included in the repo.
+
+Aligned FVessel clips can be evaluated without activating AIS scoring:
+
+```bash
+docker compose run --rm runner fvessel-ais-eval \
+  --alignment-root /workspace/outputs_v2/fvessel_alignment \
+  --run-root /workspace/outputs_v2/fvessel_ais_runs \
+  --output-dir /workspace/outputs_v2/fvessel_ais_eval \
+  --model /workspace/models/YOLOV8M_CUSTOM.pt \
+  --tracker /workspace/config/trackers/botsort_maritime.yaml \
+  --live-reid-config /workspace/config/stitching/reid_appearance_v2.yaml \
+  --confirmation-observations 10 \
+  --min-alignment-confidence 0.10 \
+  --max-clips 3
+```
+
+This compares raw and canonical MOT tracks against `gt_fusion` MMSI labels and reports whether accepted ReID remaps are supported, penalized, or unavailable from AIS identity evidence.
 
 For real AIS validation, provide:
 

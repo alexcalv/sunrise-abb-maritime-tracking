@@ -72,6 +72,46 @@ def _append_mot_dict_rows(mot_path: Path, rows: list[dict]) -> int:
     return rows_written
 
 
+def _update_motion_direction_consistency(prediction: dict) -> None:
+    """Keep corridor arrows tied to the hidden vessel, not to the occluder."""
+
+    vx = prediction.get("hidden_velocity_x", prediction.get("velocity_x"))
+    vy = prediction.get("hidden_velocity_y", prediction.get("velocity_y"))
+    last_center = prediction.get("last_visible_center") or prediction.get("arrow_start") or {}
+    if vx is None or vy is None or not last_center:
+        prediction["motion_direction_consistency"] = "unknown"
+        prediction["corridor_direction_note"] = "missing hidden-track velocity or last visible center"
+        return
+
+    hidden_vx = float(vx)
+    hidden_vy = float(vy)
+    if abs(hidden_vx) + abs(hidden_vy) < 1e-6:
+        prediction["motion_direction_consistency"] = "unknown"
+        prediction["corridor_direction_note"] = "hidden-track speed too small for a reliable arrow"
+        return
+
+    continuation = prediction.get("visual_continuation")
+    best_center = continuation.get("best_center") if isinstance(continuation, dict) else None
+    if not best_center:
+        prediction["motion_direction_consistency"] = "valid"
+        prediction["corridor_direction_note"] = "arrow follows hidden-track last visible velocity"
+        return
+
+    match_vx = float(best_center.get("x", last_center.get("x", 0.0))) - float(last_center.get("x", 0.0))
+    match_vy = float(best_center.get("y", last_center.get("y", 0.0))) - float(last_center.get("y", 0.0))
+    dot = (hidden_vx * match_vx) + (hidden_vy * match_vy)
+    prediction["motion_direction_dot"] = round(dot, 6)
+    if abs(match_vx) + abs(match_vy) < 1e-6:
+        prediction["motion_direction_consistency"] = "unknown"
+        prediction["corridor_direction_note"] = "visual match is too close to last visible center to confirm direction"
+    elif dot < 0:
+        prediction["motion_direction_consistency"] = "inconsistent"
+        prediction["corridor_direction_note"] = "visual match moves opposite to hidden-track velocity"
+    else:
+        prediction["motion_direction_consistency"] = "valid"
+        prediction["corridor_direction_note"] = "visual match agrees with hidden-track velocity"
+
+
 def _tracker_detections(
     track_ids: list[int],
     xywh_boxes: list[list[float]],
@@ -430,6 +470,9 @@ def run_tracking(
                             "x": prediction["predicted_x"],
                             "y": prediction["predicted_y"],
                         },
+                        "last_bbox": [round(float(value), 6) for value in history[-1]["bbox"]],
+                        "bbox_width": round(float(history[-1]["bbox"][2]), 6),
+                        "bbox_height": round(float(history[-1]["bbox"][3]), 6),
                         "sequence_name": seq_name,
                         "reporting_only": True,
                         "remap_after_reappearance": False,
@@ -507,6 +550,8 @@ def run_tracking(
                     prediction["visual_continuation_active"] = bool(continuation.get("active"))
                     prediction["visual_continuation_confidence"] = continuation.get("confidence")
                     prediction["visual_continuation_status"] = continuation.get("status")
+                if paired_occlusion_prediction:
+                    _update_motion_direction_consistency(prediction)
                 if colreg_diagnostics:
                     prediction["colreg_context"] = {
                         "diagnostics_enabled": True,
@@ -860,6 +905,15 @@ def run_tracking(
             "paired_prediction_count": len(paired_predictions),
             "occluder_pair_count": sum(1 for prediction in all_occlusion_predictions if prediction.get("occluder_track_id") is not None),
             "corridor_prediction_count": sum(1 for prediction in all_occlusion_predictions if prediction.get("motion_corridor_start")),
+            "corridor_direction_valid_count": sum(
+                1 for prediction in all_occlusion_predictions if prediction.get("motion_direction_consistency") == "valid"
+            ),
+            "corridor_direction_inconsistent_count": sum(
+                1 for prediction in all_occlusion_predictions if prediction.get("motion_direction_consistency") == "inconsistent"
+            ),
+            "corridor_direction_unknown_count": sum(
+                1 for prediction in all_occlusion_predictions if prediction.get("motion_direction_consistency") == "unknown"
+            ),
             "mean_occlusion_pair_confidence": (
                 round(sum(occlusion_pair_confidences) / len(occlusion_pair_confidences), 6)
                 if occlusion_pair_confidences

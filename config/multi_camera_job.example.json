@@ -13,5 +13,6 @@
   "camera_a_id": "main_camera",
   "camera_b_id": "second_camera",
   "platform": "simulation",
-  "label_mode": "id"
+  "label_mode": "id",
+  "video_layout": "side_by_side_hd"
 }

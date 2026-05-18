@@ -150,6 +150,15 @@ def _register_track_multi_camera_parsers(sub: Any) -> None:
         sp.add_argument("--platform", default=None)
         sp.add_argument("--label-mode", default=None, choices=["id", "full", "none"])
         sp.add_argument(
+            "--video-layout",
+            default=None,
+            choices=["side_by_side", "top_bottom", "side_by_side_hd"],
+            help=(
+                "Combined video layout: side_by_side (full-res horizontal), "
+                "top_bottom (vertical stack), side_by_side_hd (horizontal, scaled to 1920px width; default)."
+            ),
+        )
+        sp.add_argument(
             "--fusion-mode",
             default=None,
             choices=["auto", "normalized_center", "rank_x"],
@@ -212,6 +221,7 @@ def cmd_track_multi_camera(args):
     camera_b_id = args.camera_b_id or (job.camera_b_id if job else None) or "camera_b"
     platform = args.platform or (job.platform if job else None) or "simulation"
     label_mode = args.label_mode or (job.label_mode if job else None) or "id"
+    video_layout = args.video_layout or (job.video_layout if job else None) or "side_by_side_hd"
 
     ais_file: Path | None = Path(args.ais_file) if getattr(args, "ais_file", None) else None
     if ais_file is None and job and job.ais_file:
@@ -242,6 +252,7 @@ def cmd_track_multi_camera(args):
         platform=platform,
         label_mode=label_mode,
         fusion_match_mode=fusion_match_mode,
+        video_layout=video_layout,
         ais_file=ais_file,
         ais_fps=ais_fps,
         ais_time_offset_ms=ais_time_offset_ms,

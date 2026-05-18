@@ -11,7 +11,7 @@ from common.config import settings
 from evaluation.mot import load_mot_frames, load_mot_rows, write_mot_rows
 from fusion.pairwise_center_fusion import PairwiseNormalizedCenterFusion
 from fusion.schemas import StreamTrackObservation
-from output.render_video import render_video_from_mot
+from output.render_video import render_combined_video_from_mot, render_video_from_mot
 from tracking.tracker_runner import run_tracking
 
 
@@ -222,6 +222,7 @@ def run_dual_camera_track_and_fuse(
     platform: str = "simulation",
     label_mode: str = "id",
     fusion_match_mode: str = "auto",
+    video_layout: str = "side_by_side_hd",
     ais_file: Path | str | None = None,
     ais_fps: float | None = None,
     ais_time_offset_ms: int | None = None,
@@ -344,6 +345,20 @@ def run_dual_camera_track_and_fuse(
         label_mode=label_mode,
     )
 
+    out_combined_mp4 = videos_dir / f"{main_video.stem}_{second_video.stem}_combined_overlay.mp4"
+    render_combined = render_combined_video_from_mot(
+        source_video_a=str(main_video),
+        source_video_b=str(second_video),
+        mot_file_a=str(fused_main),
+        mot_file_b=str(fused_second),
+        output_video_path=str(out_combined_mp4),
+        fps=None,
+        label_mode=label_mode,
+        layout=video_layout,
+        camera_a_label=camera_a_id,
+        camera_b_label=camera_b_id,
+    )
+
     out: dict[str, Any] = {
         "project_root": str(project_root),
         "run_name": run_name,
@@ -359,8 +374,10 @@ def run_dual_camera_track_and_fuse(
         "fusion_summary_json": str(summary_path),
         "video_main": str(out_main_mp4),
         "video_second": str(out_second_mp4),
+        "video_combined": str(out_combined_mp4),
         "render_main": render_main,
         "render_second": render_second,
+        "render_combined": render_combined,
         "fusion_match_mode": fusion_match_mode,
         "image_size_by_camera": {k: [v[0], v[1]] for k, v in image_size_by_camera.items()},
     }

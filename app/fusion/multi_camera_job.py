@@ -14,6 +14,8 @@ class MultiCameraJob:
     second_video: Path
     model_path: str | None = None
     project_root: Path | None = None
+
+    
     run_name: str = "multi_cam_run"
     tracker_yaml: str | None = None
     device: str | None = None
@@ -25,6 +27,7 @@ class MultiCameraJob:
     platform: str = "simulation"
     label_mode: str = "id"
     fusion_match_mode: str = "auto"
+    video_layout: str = "side_by_side_hd"
     ais_file: Path | None = None
     ais_fps: float | None = None
     ais_time_offset_ms: int | None = None
@@ -101,6 +104,7 @@ def load_multi_camera_job(path: Path) -> MultiCameraJob:
         platform=str(data.get("platform", "simulation")),
         label_mode=str(data.get("label_mode", "id")),
         fusion_match_mode=str(data.get("fusion_match_mode", "auto")),
+        video_layout=str(data.get("video_layout", "side_by_side_hd")),
         ais_file=ais_path,
         ais_fps=float(ais_fps) if ais_fps is not None else None,
         ais_time_offset_ms=int(ais_time_raw) if ais_time_raw is not None else None,

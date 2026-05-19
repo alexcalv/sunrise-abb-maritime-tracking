@@ -313,9 +313,7 @@ Detector and ReID training are outside this pass. The repo currently focuses on 
 
 ## Current Limitations
 
-- ReID is ready for review.
 - Occlusion prediction is image-plane and demo-oriented; paired motion corridors are reporting-only and still need broader validation.
 - COLREG is context-only by default.
 - AIS needs real files and timing/projection metadata before real validation.
-- `HOTA` is not implemented.
 - Sparse localization annotation files are still pending.

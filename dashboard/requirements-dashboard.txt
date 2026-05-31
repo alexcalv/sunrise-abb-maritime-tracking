@@ -1,0 +1,6 @@
+# Dashboard-only dependencies (kept separate from the pipeline requirements).
+streamlit>=1.33
+streamlit-image-coordinates>=0.1.9
+opencv-python-headless>=4.8
+numpy>=1.24
+Pillow>=10.0

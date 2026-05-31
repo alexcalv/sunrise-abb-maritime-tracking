@@ -1,4 +1,4 @@
-data
+/data
 outputs
 outputs_v2
 .idea/
@@ -12,3 +12,9 @@ scripts/*
 .DS_Store
 runs
 docker-compose.override.yml
+
+# Dashboard (additional tasks)
+.venv-dashboard/
+dashboard/.venv/
+dashboard/data/overrides.json
+.streamlit/

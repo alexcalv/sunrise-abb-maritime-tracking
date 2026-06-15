@@ -241,7 +241,7 @@ def main() -> None:
         selected = find_ship_at_point(px, py, frame_rows)
 
     with col_panels:
-        render_ship_panel(frame_rows, current_frame, first_seen, fps)
+        render_ship_panel(frame_rows, current_frame, first_seen, fps, all_rows=rows, occlusions=occlusions)
         st.divider()
         render_id_editor(selected, current_frame, run_key)
         st.divider()

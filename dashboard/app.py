@@ -32,9 +32,10 @@ from components.ship_panel import render_ship_panel
 from data.mot_loader import first_seen_frames, frame_bounds, load_mot_rows
 from data.occlusion_detector import detect_occlusions
 from data.overrides import apply_overrides
+from data.trails import build_trails
 from utils.bbox_mapper import find_ship_at_point
 from utils.frame_extractor import get_video_meta, read_frame
-from utils.overlay import draw_boxes
+from utils.overlay import draw_boxes, draw_trails
 
 REPO_ROOT = Path(_DASHBOARD_DIR).parent
 OUTPUTS_ROOT = REPO_ROOT / "outputs" / "track"
@@ -199,6 +200,12 @@ def main() -> None:
     with st.sidebar:
         current_frame = render_navigation(mot_min, max_frame, fps)
         st.caption(f"MOT frames {mot_min}-{mot_max}")
+        st.header("Display")
+        show_trails = st.toggle("Show vessel trails", value=False)
+        trail_length = st.slider(
+            "Trail length (frames)", min_value=5, max_value=120, value=30,
+            disabled=not show_trails,
+        )
 
     frame_rows = [row for row in rows if row["frame"] == current_frame]
 
@@ -217,6 +224,8 @@ def main() -> None:
             return
 
         image = draw_boxes(frame_rgb, frame_rows)
+        if show_trails:
+            image = draw_trails(image, build_trails(rows, current_frame, trail_length))
 
         # Scale the image responsively to the column width (aspect ratio kept,
         # no side-cropping). The component reports the displayed size back, so we

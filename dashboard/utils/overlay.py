@@ -28,3 +28,24 @@ def draw_boxes(frame_rgb: np.ndarray, frame_rows: list[dict[str, Any]]) -> Image
         draw.text((x1 + 3, text_y + 1), label, fill=(0, 0, 0))
 
     return image
+
+
+def draw_trails(
+    image: Image.Image,
+    trails: dict[int, list[tuple[float, float]]],
+) -> Image.Image:
+    """Draw each track's recent centre path as a coloured polyline onto ``image``.
+
+    ``trails`` maps a track id to its ordered (cx, cy) points (see
+    ``data.trails.build_trails``). The latest point gets a small dot to mark the
+    vessel's current position. Modifies and returns the same image.
+    """
+    draw = ImageDraw.Draw(image)
+    for tid, points in trails.items():
+        if len(points) < 2:
+            continue
+        color = track_color(tid)
+        draw.line(points, fill=color, width=2)
+        cx, cy = points[-1]
+        draw.ellipse([cx - 3, cy - 3, cx + 3, cy + 3], fill=color)
+    return image

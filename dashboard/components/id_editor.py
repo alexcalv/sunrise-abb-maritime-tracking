@@ -7,10 +7,12 @@ original MOT file is never modified.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
 
+from data.mot_export import rows_to_mot_text
 from data.overrides import add_override, clear_overrides, get_overrides, remove_override
 
 
@@ -18,6 +20,7 @@ def render_id_editor(
     selected: dict[str, Any] | None,
     current_frame: int,
     run_key: str,
+    rows: list[dict[str, Any]] | None = None,
 ) -> None:
     st.subheader("Edit ID")
 
@@ -55,3 +58,14 @@ def render_id_editor(
         if st.button("Clear all corrections"):
             clear_overrides(run_key)
             st.rerun()
+
+    if rows:
+        safe_name = Path(run_key).stem or "tracking"
+        st.download_button(
+            "Download corrected MOT",
+            data=rows_to_mot_text(rows),
+            file_name=f"{safe_name}_corrected.txt",
+            mime="text/plain",
+            help="Export the tracking file with your ID corrections applied. "
+            "The original file is never modified.",
+        )

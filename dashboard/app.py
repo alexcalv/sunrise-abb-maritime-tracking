@@ -243,7 +243,7 @@ def main() -> None:
     with col_panels:
         render_ship_panel(frame_rows, current_frame, first_seen, fps, all_rows=rows, occlusions=occlusions)
         st.divider()
-        render_id_editor(selected, current_frame, run_key)
+        render_id_editor(selected, current_frame, run_key, rows)
         st.divider()
         render_occlusion_log(occlusions, fps)
 

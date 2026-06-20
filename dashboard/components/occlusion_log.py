@@ -10,6 +10,7 @@ from typing import Any
 import streamlit as st
 
 from data.occlusion_detector import format_timecode
+from data.occlusion_export import occlusions_to_csv
 from utils.colors import track_color_hex
 
 
@@ -32,6 +33,14 @@ def render_occlusion_log(events: list[dict[str, Any]], fps: float, limit: int = 
         return
 
     st.caption(f"{len(events)} event(s) - newest first")
+
+    st.download_button(
+        "Download log (CSV)",
+        data=occlusions_to_csv(events, fps),
+        file_name="occlusion_log.csv",
+        mime="text/csv",
+        help="Export every detected occlusion event as a CSV file.",
+    )
 
     for index, event in enumerate(events[:limit]):
         tid = event["track_id"]

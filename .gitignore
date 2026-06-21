@@ -12,3 +12,18 @@ scripts/*
 .DS_Store
 runs
 docker-compose.override.yml
+
+# --- Unity (MaritimeSim2) ---
+MaritimeSim2/Library/
+MaritimeSim2/Logs/
+MaritimeSim2/UserSettings/
+
+MaritimeSim2/Temp/
+MaritimeSim2/Obj/
+MaritimeSim2/obj/
+MaritimeSim2/Build/
+MaritimeSim2/Builds/
+MaritimeSim2/[Mm]emoryCaptures/
+MaritimeSim2/.vs/
+MaritimeSim2/*.csproj
+MaritimeSim2/*.sln

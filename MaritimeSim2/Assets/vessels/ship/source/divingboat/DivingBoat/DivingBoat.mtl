@@ -1,0 +1,128 @@
+# 3ds Max Wavefront OBJ Exporter v0.94b - (c)2007 guruware
+# File Created: 04.08.2017 16:33:25
+
+newmtl LSB011
+	Ns 56.4386
+	Ni 1.5000
+	d 1.0000
+	Tr 1.0000
+	Tf 1.0000 1.0000 1.0000 
+	illum 2
+	Ka 0.0000 0.0000 0.0000
+	Kd 1.0000 1.0000 1.0000
+	Ks 0.3000 0.3000 0.3000
+	Ke 0.0000 0.0000 0.0000
+	map_Ka G:\Models\World_of_Warships\SevenBells\default_ao.dds
+	map_Kd G:\Models\World_of_Warships\DivingBoat\LSB011_a.dds
+
+newmtl AM006_Reels_1
+	Ns 56.4386
+	Ni 1.5000
+	d 1.0000
+	Tr 1.0000
+	Tf 1.0000 1.0000 1.0000 
+	illum 2
+	Ka 0.0000 0.0000 0.0000
+	Kd 1.0000 1.0000 1.0000
+	Ks 0.3000 0.3000 0.3000
+	Ke 0.0000 0.0000 0.0000
+	map_Ka G:\Models\World_of_Warships\DivingBoat\default_ao.dds
+	map_Kd G:\Models\World_of_Warships\DivingBoat\AM006_Reels_1_a.dds
+
+newmtl AM098_Sirena
+	Ns 56.4386
+	Ni 1.5000
+	d 1.0000
+	Tr 1.0000
+	Tf 1.0000 1.0000 1.0000 
+	illum 2
+	Ka 0.0000 0.0000 0.0000
+	Kd 1.0000 1.0000 1.0000
+	Ks 0.3000 0.3000 0.3000
+	Ke 0.0000 0.0000 0.0000
+	map_Ka G:\Models\World_of_Warships\DivingBoat\default_ao.dds
+	map_Kd G:\Models\World_of_Warships\DivingBoat\AM098_Sirena_a.dds
+
+newmtl AM038_Searchlight_600mm
+	Ns 56.4386
+	Ni 1.5000
+	d 1.0000
+	Tr 1.0000
+	Tf 1.0000 1.0000 1.0000 
+	illum 2
+	Ka 0.0000 0.0000 0.0000
+	Kd 1.0000 1.0000 1.0000
+	Ks 0.3000 0.3000 0.3000
+	Ke 0.0000 0.0000 0.0000
+	map_Ka G:\Models\World_of_Warships\DivingBoat\default_ao.dds
+	map_Kd G:\Models\World_of_Warships\DivingBoat\AM038_Searchlight_600mm_a.dds
+
+newmtl AM072_Ships_bell
+	Ns 56.4386
+	Ni 1.5000
+	d 1.0000
+	Tr 1.0000
+	Tf 1.0000 1.0000 1.0000 
+	illum 2
+	Ka 0.0000 0.0000 0.0000
+	Kd 1.0000 1.0000 1.0000
+	Ks 0.3000 0.3000 0.3000
+	Ke 0.0000 0.0000 0.0000
+	map_Ka G:\Models\World_of_Warships\DivingBoat\default_ao.dds
+	map_Kd G:\Models\World_of_Warships\DivingBoat\AM072_Ships_bell_a.dds
+
+newmtl AM080_Whips_Antenna
+	Ns 56.4386
+	Ni 1.5000
+	d 1.0000
+	Tr 1.0000
+	Tf 1.0000 1.0000 1.0000 
+	illum 2
+	Ka 0.0000 0.0000 0.0000
+	Kd 1.0000 1.0000 1.0000
+	Ks 0.3000 0.3000 0.3000
+	Ke 0.0000 0.0000 0.0000
+	map_Ka G:\Models\World_of_Warships\DivingBoat\default_ao.dds
+	map_Kd G:\Models\World_of_Warships\DivingBoat\AM080_Whips_Antenna_a.dds
+
+newmtl CM008_Life_Buoy_1
+	Ns 56.4386
+	Ni 1.5000
+	d 1.0000
+	Tr 1.0000
+	Tf 1.0000 1.0000 1.0000 
+	illum 2
+	Ka 0.0000 0.0000 0.0000
+	Kd 1.0000 1.0000 1.0000
+	Ks 0.3000 0.3000 0.3000
+	Ke 0.0000 0.0000 0.0000
+	map_Ka G:\Models\World_of_Warships\DivingBoat\default_ao.dds
+	map_Kd G:\Models\World_of_Warships\DivingBoat\CM008_Life_Buoy_1_a.dds
+
+newmtl CM001_Propeller
+	Ns 56.4386
+	Ni 1.5000
+	d 1.0000
+	Tr 1.0000
+	Tf 1.0000 1.0000 1.0000 
+	illum 2
+	Ka 0.0000 0.0000 0.0000
+	Kd 1.0000 1.0000 1.0000
+	Ks 0.3000 0.3000 0.3000
+	Ke 0.0000 0.0000 0.0000
+	map_Ka G:\Models\World_of_Warships\DivingBoat\default_ao.dds
+	map_Kd G:\Models\World_of_Warships\DivingBoat\CM001_Propeller_a.dds
+
+newmtl AM045_Running_Lights_F
+	Ns 56.4386
+	Ni 1.5000
+	d 1.0000
+	Tr 1.0000
+	Tf 1.0000 1.0000 1.0000 
+	illum 2
+	Ka 0.0000 0.0000 0.0000
+	Kd 1.0000 1.0000 1.0000
+	Ks 0.3000 0.3000 0.3000
+	Ke 0.0000 0.0000 0.0000
+	map_Ka G:\Models\World_of_Warships\DivingBoat\default_ao.dds
+	map_Kd G:\Models\World_of_Warships\DivingBoat\AM045_Running_Lights_F_a.dds

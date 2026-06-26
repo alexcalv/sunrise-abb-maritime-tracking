@@ -3,6 +3,7 @@ from __future__ import annotations
 from bisect import bisect_left
 
 from .parser import parse_timestamp
+from .schemas import AisAlignedClip, AisAlignedVesselFrame, AisFix
 from .types import AisConfig, AisFrameState, AisTrack
 
 
@@ -160,3 +161,53 @@ def align_ais_tracks_to_frames(
         if states:
             aligned[frame] = states
     return aligned
+
+
+def _interpolate_fix(left: AisFix, right: AisFix, timestamp_ms: float) -> AisAlignedVesselFrame | None:
+    if left.pixel_x is None or left.pixel_y is None or right.pixel_x is None or right.pixel_y is None:
+        return None
+    span = max(float(right.timestamp_ms - left.timestamp_ms), 1e-9)
+    ratio = max(0.0, min(1.0, (float(timestamp_ms) - float(left.timestamp_ms)) / span))
+    return AisAlignedVesselFrame(
+        mmsi=int(left.mmsi),
+        pixel_x=float(left.pixel_x) + ((float(right.pixel_x) - float(left.pixel_x)) * ratio),
+        pixel_y=float(left.pixel_y) + ((float(right.pixel_y) - float(left.pixel_y)) * ratio),
+        interpolated=left.timestamp_ms != right.timestamp_ms,
+    )
+
+
+def build_aligned_clip(
+    fixes_by_mmsi: dict[int, list[AisFix]],
+    *,
+    max_frame: int,
+    video_fps: float,
+    time_offset_ms: int = 0,
+) -> AisAlignedClip:
+    """Build the legacy frame-indexed AIS clip used by scoring tests and bridge code."""
+    frames: dict[int, dict[int, AisAlignedVesselFrame]] = {}
+    if max_frame <= 0 or video_fps <= 0:
+        return AisAlignedClip(frames=frames, max_frame=max_frame, video_fps=video_fps, time_offset_ms=time_offset_ms)
+
+    for frame in range(1, int(max_frame) + 1):
+        timestamp_ms = float(time_offset_ms) + (((frame - 1) / float(video_fps)) * 1000.0)
+        vessels: dict[int, AisAlignedVesselFrame] = {}
+        for mmsi, fixes in fixes_by_mmsi.items():
+            ordered = sorted(fixes, key=lambda item: item.timestamp_ms)
+            if not ordered:
+                continue
+            times = [fix.timestamp_ms for fix in ordered]
+            index = bisect_left(times, timestamp_ms)
+            if index == 0:
+                left = right = ordered[0]
+            elif index >= len(ordered):
+                left = right = ordered[-1]
+            else:
+                left = ordered[index - 1]
+                right = ordered[index]
+            state = _interpolate_fix(left, right, timestamp_ms)
+            if state is not None:
+                vessels[int(mmsi)] = state
+        if vessels:
+            frames[frame] = vessels
+
+    return AisAlignedClip(frames=frames, max_frame=max_frame, video_fps=video_fps, time_offset_ms=time_offset_ms)

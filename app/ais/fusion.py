@@ -174,3 +174,68 @@ def assign_ais_to_tracks(
         best = candidates[0]
         assignments.append(best)
     return assignments
+
+
+def score_ais_position(
+    center_xy: list[float] | tuple[float, float],
+    frame: int,
+    mmsi: int | None,
+    aligned_clip,
+    *,
+    max_distance_px: float,
+    neutral_score: float = 0.5,
+) -> tuple[float, float | None, str]:
+    """Legacy pixel-distance score used by older AIS/ReID bridge tests."""
+    if aligned_clip is None or mmsi is None:
+        return float(neutral_score), None, "ais_missing"
+    vessel = aligned_clip.vessel_at(int(frame), int(mmsi))
+    if vessel is None:
+        return float(neutral_score), None, "ais_missing"
+    distance = math.hypot(float(center_xy[0]) - float(vessel.pixel_x), float(center_xy[1]) - float(vessel.pixel_y))
+    return _score_distance(distance, max_distance_px), distance, "ais_position"
+
+
+def score_ais_identity(
+    assigned_mmsi: int | str | None,
+    candidate_mmsi: int | str | None,
+    *,
+    hard_gate: bool = False,
+    neutral_score: float = 0.5,
+) -> tuple[float, bool, str]:
+    """Legacy identity score: missing AIS is neutral, hard mismatches can gate."""
+    if assigned_mmsi is None or candidate_mmsi is None:
+        return float(neutral_score), True, "ais_missing"
+    if str(assigned_mmsi) == str(candidate_mmsi):
+        return 1.0, True, "mmsi_match"
+    if hard_gate:
+        return 0.0, False, "mmsi_hard_mismatch"
+    return 0.0, True, "mmsi_mismatch"
+
+
+def assign_mmsi_per_tracklet(tracklets: list[Any], aligned_clip, *, max_distance_px: float) -> dict[str, int | None]:
+    """Assign each tracklet to the nearest AIS MMSI observed during its frame span."""
+    assignments: dict[str, int | None] = {}
+    for tracklet in tracklets:
+        best_mmsi: int | None = None
+        best_distance = float("inf")
+        start = int(getattr(tracklet, "frame_start", 1))
+        end = int(getattr(tracklet, "frame_end", start))
+        center = getattr(tracklet, "mean_bbox", None) or getattr(tracklet, "start_center", None)
+        if center is None:
+            assignments[str(getattr(tracklet, "tracklet_id"))] = None
+            continue
+        if len(center) >= 4:
+            cx = float(center[0]) + (float(center[2]) / 2.0)
+            cy = float(center[1]) + (float(center[3]) / 2.0)
+        else:
+            cx, cy = float(center[0]), float(center[1])
+
+        for frame in range(start, end + 1):
+            for mmsi, vessel in aligned_clip.vessels_at(frame).items():
+                distance = math.hypot(cx - float(vessel.pixel_x), cy - float(vessel.pixel_y))
+                if distance < best_distance:
+                    best_distance = distance
+                    best_mmsi = int(mmsi)
+
+        assignments[str(getattr(tracklet, "tracklet_id"))] = best_mmsi if best_distance <= float(max_distance_px) else None
+    return assignments

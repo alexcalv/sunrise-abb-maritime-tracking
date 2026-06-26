@@ -55,6 +55,8 @@ services:
       - ./config:/workspace/config
       - ./models:/workspace/models
       - ./tests:/workspace/tests
+      - ./tools:/workspace/tools
+      - ./MaritimeSim2:/workspace/MaritimeSim2
 
   # Unit tests (image ENTRYPOINT is scripts.cli; this service overrides to plain python).
   test:
@@ -67,3 +69,5 @@ services:
     volumes:
       - ./app:/workspace/app
       - ./tests:/workspace/tests
+      - ./tools:/workspace/tools
+      - ./MaritimeSim2:/workspace/MaritimeSim2

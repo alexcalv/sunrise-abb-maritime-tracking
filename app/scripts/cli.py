@@ -2,29 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from ais.checks import run_checks as run_ais_checks
-from ais.fvessel_identity_eval import run_fvessel_ais_identity_eval
-from broker.celery_app import celery_app
-from colreg.checks import run_checks as run_colreg_checks
 from common.config import settings
-from evaluation.localization import evaluate_sparse_localization_dir
-from evaluation.mot import list_track_ids, merge_tracker_ids_to_gt, validate_gt_dir
-from evaluation.metrics import evaluate_mot_dir
-from ingestion.ingestor import build_tasks
-from output.aggregator import aggregate_clip
-from output.render_video import render_annotated_video, render_video_from_mot
-from reid.regression import check_regression
-from stitching.batch import stitch_batch
-from stitching.replay import replay_stitch_tracks
-from stitching.runner import DEFAULT_CONFIG_PATH, stitch_tracks
-from tracking.tracker_runner import run_tracking
 
 
-# Default stitch config path (duplicates stitching.runner.DEFAULT_CONFIG_PATH to avoid importing stitch stack at CLI import time).
+# Default stitch config path (kept local to avoid importing the stitch stack at CLI import time).
 _DEFAULT_STITCH_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "stitching" / "default.yaml"
 
 _VIDEO_EXTS_AIS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".gif"}
@@ -70,6 +56,8 @@ def cmd_pipeline_ingest(args):
 
 
 def cmd_pipeline_aggregate(args):
+    from output.aggregator import aggregate_clip
+
     print(aggregate_clip(settings.worker_results_dir, settings.aggregated_dir, args.clip_id))
 
 
@@ -294,6 +282,8 @@ def cmd_track_multi_camera(args):
 
 
 def cmd_evaluate(args):
+    from evaluation.metrics import evaluate_mot_dir
+
     result = evaluate_mot_dir(
         pred_dir=args.pred_dir,
         gt_dir=args.gt_dir,
@@ -306,6 +296,8 @@ def cmd_evaluate(args):
 
 
 def cmd_evaluate_localization(args):
+    from evaluation.localization import evaluate_sparse_localization_dir
+
     result = evaluate_sparse_localization_dir(
         pred_dir=args.pred_dir,
         gt_dir=args.gt_dir,
@@ -317,6 +309,8 @@ def cmd_evaluate_localization(args):
 
 
 def cmd_gt_validate(args):
+    from evaluation.mot import validate_gt_dir
+
     result = validate_gt_dir(
         gt_dir=args.gt_dir,
         output_json=args.output_json,
@@ -326,6 +320,8 @@ def cmd_gt_validate(args):
 
 
 def cmd_gt_merge_ids(args):
+    from evaluation.mot import list_track_ids, merge_tracker_ids_to_gt
+
     if args.list_ids:
         print(list_track_ids(args.input))
         return
@@ -376,6 +372,8 @@ def cmd_stitch_batch(args):
 
 
 def cmd_replay_stitch(args):
+    from stitching.replay import replay_stitch_tracks
+
     result = replay_stitch_tracks(
         pred_dir=args.pred_dir,
         output_dir=args.output_dir,
@@ -387,6 +385,8 @@ def cmd_replay_stitch(args):
 
 
 def cmd_reid_regression(args):
+    from reid.regression import check_regression
+
     summary = check_regression(
         cut28_mot=args.cut28_mot,
         cut28_video=args.cut28_video,
@@ -403,6 +403,9 @@ def cmd_reid_regression(args):
 
 
 def cmd_self_check(args):
+    from ais.checks import run_checks as run_ais_checks
+    from colreg.checks import run_checks as run_colreg_checks
+
     run_colreg = bool(args.colreg) or not bool(args.ais)
     run_ais = bool(args.ais) or not bool(args.colreg)
     checks = {}
@@ -420,6 +423,8 @@ def cmd_self_check(args):
 
 
 def cmd_fvessel_ais_eval(args):
+    from ais.fvessel_identity_eval import run_fvessel_ais_identity_eval
+
     summary = run_fvessel_ais_identity_eval(
         alignment_root=args.alignment_root,
         run_root=args.run_root,
@@ -439,8 +444,40 @@ def cmd_fvessel_ais_eval(args):
         raise SystemExit(1)
 
 
+def cmd_sim_eval(args):
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    from tools.run_sim_eval import run_sim_eval
+
+    summary = run_sim_eval(
+        config=args.config,
+        sim_out_dir=args.sim_out,
+        eval_dir=args.eval_dir,
+        unity=args.unity,
+        unity_project=args.unity_project,
+        model=args.model,
+        tracker=args.tracker,
+        device=args.device,
+        tracking_project=args.tracking_project,
+        run_name=args.run_name,
+        timeout=args.timeout,
+        batchmode=args.batchmode,
+        verbose=args.verbose,
+        skip_generation=args.skip_generation,
+        dry_run=args.dry_run,
+        iou_threshold=args.iou_threshold,
+        frame_offset=args.frame_offset,
+        conf=args.conf,
+        imgsz=args.imgsz,
+    )
+    print(json.dumps(summary, indent=2))
+
+
 def cmd_pipeline_full(args):
     from ingestion.ingestor import build_tasks
+    from output.aggregator import aggregate_clip
 
     clip_id = Path(args.source).stem
 
@@ -569,8 +606,7 @@ def build_parser():
     sp.add_argument("--device", default=settings.yolo_device)
     sp.add_argument("--project", default="/workspace/outputs/track")
     sp.add_argument("--name", default="botsort_run")
-    sp.add_argument("
-                    ", type=float, help="Optional detector confidence threshold passed to Ultralytics tracking.")
+    sp.add_argument("--conf", type=float, help="Optional detector confidence threshold passed to Ultralytics tracking.")
     sp.add_argument("--imgsz", type=int, help="Optional image size passed to Ultralytics tracking.")
     sp.add_argument("--secondary-model", help="Optional secondary detector for experimental fusion diagnostics.")
     sp.add_argument(
@@ -603,7 +639,7 @@ def build_parser():
     )
     sp.add_argument(
         "--live-reid-config",
-        default=str(DEFAULT_CONFIG_PATH),
+        default=str(_DEFAULT_STITCH_CONFIG_PATH),
         help="Config used by experimental --live-reid or --live-reid-in-loop.",
     )
     sp.add_argument(
@@ -659,11 +695,6 @@ def build_parser():
     sp.add_argument("--ais-file", help="Optional AIS CSV/JSON file used only with --ais-diagnostics.")
     sp.add_argument("--ais-video-start-time", help="Optional video start timestamp for AIS frame alignment.")
     sp.add_argument("--ais-affine-matrix", help="Optional 2x3 or 3x3 lon/lat-to-image affine matrix for AIS diagnostics.")
-    sp.add_argument(
-        "--ais-file",
-        default=None,
-        help="Optional AIS JSON sidecar source (see config/ais_layer.example.json). Does not change MOT without a consumer.",
-    )
     sp.add_argument(
         "--ais-fps",
         type=float,
@@ -745,7 +776,7 @@ def build_parser():
     sp.add_argument("--pred-dir", required=True)
     sp.add_argument("--output-dir")
     sp.add_argument("--run-summary")
-    sp.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    sp.add_argument("--config", default=str(_DEFAULT_STITCH_CONFIG_PATH))
     sp.add_argument("--name")
     sp.set_defaults(func=cmd_replay_stitch)
 
@@ -795,6 +826,31 @@ def build_parser():
     sp.add_argument("--device", default="cpu")
     sp.add_argument("--iou-threshold", type=float, default=0.3)
     sp.set_defaults(func=cmd_fvessel_ais_eval)
+
+    sp = sub.add_parser(
+        "sim-eval",
+        description="Generate MaritimeSim videos, run tracking per camera, and evaluate against Unity MOT ground truth.",
+    )
+    sp.add_argument("config", help="Simulation JSON config.")
+    sp.add_argument("--sim-out", help="Simulation output directory (default: outputs/sim/<config>).")
+    sp.add_argument("--eval-dir", help="Evaluation output directory (default: outputs/sim_eval/<config>).")
+    sp.add_argument("--unity", help="Path to Unity executable or set UNITY_PATH.")
+    sp.add_argument("--unity-project", help="Unity project root (default: MaritimeSim2).")
+    sp.add_argument("--model", help="YOLO model path/name (default: /workspace/models/yolo26l.pt if present).")
+    sp.add_argument("--tracker", help="Tracker YAML (default: config/trackers/botsort_maritime.yaml).")
+    sp.add_argument("--device", default="cpu", help="Tracking device; use cpu in Docker on Mac.")
+    sp.add_argument("--tracking-project", help="Root for raw tracking runs (default: <eval-dir>/track).")
+    sp.add_argument("--run-name", help="Tracking run name (default: config stem).")
+    sp.add_argument("--timeout", type=float, default=1800, help="Unity timeout in seconds.")
+    sp.add_argument("--batchmode", action="store_true", help="Pass -batchmode to Unity (not recommended for Recorder).")
+    sp.add_argument("--verbose", action="store_true", help="Enable verbose Unity simulation logs.")
+    sp.add_argument("--skip-generation", action="store_true", help="Reuse existing files in --sim-out.")
+    sp.add_argument("--dry-run", action="store_true", help="Validate config and print planned steps only.")
+    sp.add_argument("--iou-threshold", type=float, default=0.5)
+    sp.add_argument("--frame-offset", type=int, default=0)
+    sp.add_argument("--conf", type=float, help="Optional detector confidence threshold.")
+    sp.add_argument("--imgsz", type=int, help="Optional detector image size.")
+    sp.set_defaults(func=cmd_sim_eval)
 
     sp = sub.add_parser("render-video")
     sp.add_argument("--clip-id")

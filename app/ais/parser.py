@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .schemas import AisFix
 from .types import AisConfig, AisRecord, AisTrack
 
 
@@ -149,3 +150,68 @@ def load_ais_file_with_warnings(path: str | Path, config: AisConfig) -> tuple[di
 def load_ais_file(path: str | Path, config: AisConfig) -> dict[str, AisTrack]:
     tracks, _ = load_ais_file_with_warnings(path, config)
     return tracks
+
+
+def _fix_from_row(row: dict[str, Any], *, video_fps: float | None = None) -> AisFix | None:
+    normalized = _column_map(row)
+
+    def get(*names: str) -> Any:
+        for name in names:
+            value = normalized.get(_normalize_key(name))
+            if value not in (None, ""):
+                return value
+        return None
+
+    mmsi = get("mmsi")
+    if mmsi is None:
+        return None
+
+    timestamp_ms = get("timestamp_ms")
+    if timestamp_ms is None:
+        frame = get("frame", "frame_index")
+        if frame is not None and video_fps:
+            timestamp_ms = int(round(((int(float(frame)) - 1) / float(video_fps)) * 1000.0))
+        else:
+            timestamp = parse_timestamp(get("timestamp", "time"))
+            timestamp_ms = int(round(float(timestamp or 0.0) * 1000.0))
+
+    return AisFix(
+        mmsi=int(float(mmsi)),
+        timestamp_ms=int(float(timestamp_ms)),
+        latitude_deg=_parse_float(get("latitude_deg", "lat", "latitude")),
+        longitude_deg=_parse_float(get("longitude_deg", "lon", "longitude")),
+        pixel_x=_parse_float(get("pixel_x", "x")),
+        pixel_y=_parse_float(get("pixel_y", "y")),
+        sog_knots=_parse_float(get("sog_knots", "sog")),
+        cog_deg=_parse_float(get("cog_deg", "cog")),
+    )
+
+
+def fixes_from_json_dict(data: dict[str, Any], *, video_fps: float | None = None) -> list[AisFix]:
+    """Load legacy AisFix rows from a JSON dict with a top-level positions list."""
+    rows = data.get("positions", data)
+    if not isinstance(rows, list):
+        rows = _json_records(rows)
+    fixes = [_fix_from_row(dict(row), video_fps=video_fps) for row in rows if isinstance(row, dict)]
+    return sorted([fix for fix in fixes if fix is not None], key=lambda item: (item.timestamp_ms, item.mmsi))
+
+
+def fixes_from_csv_path(path: str | Path, *, video_fps: float | None = None) -> list[AisFix]:
+    """Load legacy AisFix rows from CSV."""
+    with Path(path).open("r", newline="", encoding="utf-8") as handle:
+        fixes = [_fix_from_row(dict(row), video_fps=video_fps) for row in csv.DictReader(handle)]
+    return sorted([fix for fix in fixes if fix is not None], key=lambda item: (item.timestamp_ms, item.mmsi))
+
+
+def load_ais_fixes(path: str | Path, *, video_fps: float | None = None) -> list[AisFix]:
+    ais_path = Path(path)
+    if ais_path.suffix.lower() == ".json":
+        return fixes_from_json_dict(json.loads(ais_path.read_text(encoding="utf-8")), video_fps=video_fps)
+    return fixes_from_csv_path(ais_path, video_fps=video_fps)
+
+
+def group_fixes_by_mmsi(fixes: list[AisFix]) -> dict[int, list[AisFix]]:
+    grouped: dict[int, list[AisFix]] = defaultdict(list)
+    for fix in fixes:
+        grouped[int(fix.mmsi)].append(fix)
+    return {mmsi: sorted(rows, key=lambda item: item.timestamp_ms) for mmsi, rows in sorted(grouped.items())}

@@ -247,6 +247,25 @@ docker compose run --rm runner evaluate \
   --summary-json /workspace/outputs/eval/benchmark_v2_continuity/cut28_target/botsort_one_original.json
 ```
 
+### Automated MaritimeSim Evaluation
+
+`tools/generate_videos.py` is the Unity wrapper and should live in `tools/`.
+`sim-eval` runs the complete loop: render one video per configured Unity camera,
+run tracking for every rendered camera video, then evaluate predicted MOT files
+against Unity's MOT ground truth.
+
+```bash
+docker compose run --rm runner sim-eval /workspace/MaritimeSim2/Assets/configs/example_config.json \
+  --sim-out /workspace/outputs/sim/example_config \
+  --eval-dir /workspace/outputs/sim_eval/example_config \
+  --model /workspace/models/yolo26l.pt \
+  --device cpu
+```
+
+On a Mac without Unity installed, use `--dry-run` to check Docker/CLI wiring, or
+use `--skip-generation --sim-out <existing-dir>` when Unity outputs were produced
+elsewhere and already contain `<camera>.mp4`, `<camera>.txt`, and `<camera>.json`.
+
 Review checks:
 
 ```bash

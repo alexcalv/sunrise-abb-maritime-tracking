@@ -13,6 +13,7 @@ from data.occlusion_detector import detect_occlusions, format_timecode
 from data.occlusion_export import occlusions_to_csv
 from data.overrides import apply_overrides
 from data.stats import occlusion_counts, sequence_summary
+from data.timeline import build_presence_segments
 from data.trails import build_trails
 from utils.bbox_mapper import find_ship_at_point, point_in_bbox
 
@@ -111,3 +112,19 @@ def test_occlusions_to_csv_header_and_rows():
     lines = csv_text.strip().splitlines()
     assert lines[0] == "track_id,gap_start,gap_end,gap_frames,gap_seconds,timecode"
     assert lines[1].startswith("5,1,6,4,")
+
+
+def test_build_presence_segments_splits_on_gap():
+    rows = [
+        _row(1, 5, [0, 0, 10, 10]),
+        _row(2, 5, [0, 0, 10, 10]),
+        _row(6, 5, [0, 0, 10, 10]),
+        _row(7, 5, [0, 0, 10, 10]),
+    ]
+    segments = build_presence_segments(rows)
+    assert segments[5] == [(1, 2), (6, 7)]
+
+
+def test_build_presence_segments_skips_negative_ids():
+    rows = [_row(1, -1, [0, 0, 10, 10]), _row(2, -1, [0, 0, 10, 10])]
+    assert build_presence_segments(rows) == {}

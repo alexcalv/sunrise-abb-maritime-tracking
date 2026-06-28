@@ -29,6 +29,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 from components.id_editor import render_id_editor
 from components.occlusion_log import render_occlusion_log
 from components.ship_panel import render_ship_panel
+from components.timeline import render_timeline
 from data.mot_loader import first_seen_frames, frame_bounds, load_mot_rows
 from data.occlusion_detector import detect_occlusions
 from data.overrides import apply_overrides
@@ -246,6 +247,9 @@ def main() -> None:
         render_id_editor(selected, current_frame, run_key, rows)
         st.divider()
         render_occlusion_log(occlusions, fps)
+
+    st.divider()
+    render_timeline(rows, current_frame)
 
     # Auto-advance when Play is on. Step one frame, pace to ~video FPS, rerun.
     # At the end we simply stop advancing; nav_playing is a widget key and can't

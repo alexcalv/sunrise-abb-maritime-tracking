@@ -30,6 +30,9 @@ def render_ship_panel(
 ) -> None:
     st.subheader("Ships on screen")
 
+    # Real tracks only: negative ids are unmatched detections, not vessels.
+    frame_rows = [r for r in frame_rows if r["id"] is not None and r["id"] >= 0]
+
     # Sequence-level summary across the whole run (not just this frame).
     if all_rows:
         summary = sequence_summary(all_rows, fps)

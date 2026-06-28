@@ -13,7 +13,13 @@ from typing import Any
 import streamlit as st
 
 from data.mot_export import rows_to_mot_text
-from data.overrides import add_override, clear_overrides, get_overrides, remove_override
+from data.overrides import (
+    add_override,
+    clear_overrides,
+    find_collisions,
+    get_overrides,
+    remove_override,
+)
 
 
 def render_id_editor(
@@ -36,12 +42,34 @@ def render_id_editor(
             step=1,
             key=f"new_id_{run_key}_{current_frame}_{current_id}",
         )
+        scope = st.radio(
+            "Scope",
+            ["From this frame onward (split)", "Whole track (merge / relabel)"],
+            key=f"scope_{run_key}_{current_frame}_{current_id}",
+            help="Split: only frames from here on get the new id. "
+            "Whole track: every frame of this id is relabelled - use it to merge "
+            "two ids into one.",
+        )
+        from_frame = 0 if scope.startswith("Whole") else current_frame
+
+        # Warn (do not block) if the target id already exists in the affected range.
+        collisions = []
+        if rows and int(new_id) != int(current_id):
+            collisions = find_collisions(rows, int(new_id), from_frame)
+        if collisions:
+            shown = ", ".join(str(f) for f in collisions[:5])
+            more = " ..." if len(collisions) > 5 else ""
+            st.warning(
+                f"Ship #{int(new_id)} already exists at frame(s) {shown}{more}. "
+                "Applying this puts two vessels under the same id there."
+            )
+
         if st.button("Apply correction", type="primary"):
             if int(new_id) == int(current_id):
                 st.warning("New ID is identical to the current one.")
             else:
-                add_override(run_key, old_id=current_id, new_id=int(new_id), from_frame=current_frame)
-                st.success(f"Ship #{current_id} -> #{int(new_id)} from frame {current_frame}.")
+                add_override(run_key, old_id=current_id, new_id=int(new_id), from_frame=from_frame)
+                st.success(f"Ship #{current_id} -> #{int(new_id)} from frame {from_frame}.")
                 st.rerun()
 
     entries = get_overrides(run_key)
@@ -55,8 +83,24 @@ def render_id_editor(
             if del_col.button("✕", key=f"del_{run_key}_{index}", help="Delete this correction"):
                 remove_override(run_key, index)
                 st.rerun()
-        if st.button("Clear all corrections"):
-            clear_overrides(run_key)
+
+        if st.button("Undo last correction"):
+            remove_override(run_key, len(entries) - 1)
+            st.rerun()
+
+        confirm_key = f"confirm_clear_{run_key}"
+        if st.session_state.get(confirm_key):
+            st.warning("Clear all corrections? This cannot be undone.")
+            yes_col, no_col = st.columns(2)
+            if yes_col.button("Yes, clear all", type="primary"):
+                clear_overrides(run_key)
+                st.session_state[confirm_key] = False
+                st.rerun()
+            if no_col.button("Cancel"):
+                st.session_state[confirm_key] = False
+                st.rerun()
+        elif st.button("Clear all corrections"):
+            st.session_state[confirm_key] = True
             st.rerun()
 
     if rows:

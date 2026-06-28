@@ -62,6 +62,20 @@ def clear_overrides(run_key: str) -> None:
         _save_store(store)
 
 
+def find_collisions(rows: list[dict[str, Any]], new_id: int, from_frame: int) -> list[int]:
+    """Frames at/after ``from_frame`` where ``new_id`` already exists.
+
+    Used to warn that applying a correction would put two boxes carrying the
+    same id on the same frame. Returns the sorted list of offending frames
+    (empty when the correction is unambiguous).
+    """
+    target = int(new_id)
+    start = int(from_frame)
+    return sorted(
+        {row["frame"] for row in rows if row["id"] == target and row["frame"] >= start}
+    )
+
+
 def apply_overrides(rows: list[dict[str, Any]], run_key: str) -> list[dict[str, Any]]:
     """Return rows with ID overrides applied (originals are left untouched)."""
     entries = get_overrides(run_key)

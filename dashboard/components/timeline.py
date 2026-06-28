@@ -17,10 +17,17 @@ from data.timeline import build_presence_segments
 from utils.colors import track_color_hex
 
 
-def render_timeline(rows: list[dict[str, Any]], current_frame: int, max_gap: int = 1) -> None:
+def render_timeline(
+    rows: list[dict[str, Any]],
+    current_frame: int,
+    max_gap: int = 1,
+    focus_id: int | None = None,
+) -> None:
     st.subheader("Vessel timeline")
 
     segments = build_presence_segments(rows, max_gap)
+    if focus_id is not None:
+        segments = {tid: segs for tid, segs in segments.items() if tid == focus_id}
     if not segments:
         st.info("No tracked vessel to show on the timeline.")
         return

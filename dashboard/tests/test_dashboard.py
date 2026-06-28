@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.mot_export import rows_to_mot_text
 from data.occlusion_detector import detect_occlusions, format_timecode
 from data.occlusion_export import occlusions_to_csv
-from data.overrides import apply_overrides
+from data.overrides import apply_overrides, find_collisions
 from data.stats import occlusion_counts, sequence_summary
 from data.timeline import build_presence_segments
 from data.trails import build_trails
@@ -128,3 +128,20 @@ def test_build_presence_segments_splits_on_gap():
 def test_build_presence_segments_skips_negative_ids():
     rows = [_row(1, -1, [0, 0, 10, 10]), _row(2, -1, [0, 0, 10, 10])]
     assert build_presence_segments(rows) == {}
+
+
+def test_find_collisions_detects_existing_target():
+    rows = [
+        _row(1, 7, [0, 0, 10, 10]),
+        _row(2, 5, [0, 0, 10, 10]),
+        _row(3, 5, [0, 0, 10, 10]),
+    ]
+    # Relabelling #7 -> #5 from frame 0 collides where #5 already exists.
+    assert find_collisions(rows, new_id=5, from_frame=0) == [2, 3]
+    # Restricting the range drops earlier collisions.
+    assert find_collisions(rows, new_id=5, from_frame=3) == [3]
+
+
+def test_find_collisions_none_for_fresh_id():
+    rows = [_row(1, 7, [0, 0, 10, 10]), _row(2, 7, [0, 0, 10, 10])]
+    assert find_collisions(rows, new_id=99, from_frame=0) == []

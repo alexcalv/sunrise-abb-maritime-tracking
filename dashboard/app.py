@@ -12,6 +12,7 @@ Run from the repo root:
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import sys
 import tempfile
@@ -207,6 +208,13 @@ def main() -> None:
             "Trail length (frames)", min_value=5, max_value=120, value=30,
             disabled=not show_trails,
         )
+        ship_ids = sorted({row["id"] for row in rows if row["id"] is not None and row["id"] >= 0})
+        focus_choice = st.selectbox(
+            "Focus on ship",
+            ["All ships"] + [f"#{tid}" for tid in ship_ids],
+            help="Restrict the ship panel and timeline to a single vessel.",
+        )
+        focus_id = None if focus_choice == "All ships" else int(focus_choice[1:])
 
     frame_rows = [row for row in rows if row["frame"] == current_frame]
 
@@ -234,6 +242,16 @@ def main() -> None:
         click = streamlit_image_coordinates(image, use_column_width="always", key="frame_click")
         st.caption("Click a vessel to select it for ID editing.")
 
+        png_buffer = io.BytesIO()
+        image.save(png_buffer, format="PNG")
+        st.download_button(
+            "Save frame (PNG)",
+            data=png_buffer.getvalue(),
+            file_name=f"{Path(run_key).stem}_frame_{current_frame:06d}.png",
+            mime="image/png",
+            help="Download the current frame with the boxes (and trails) drawn on it.",
+        )
+
     selected = None
     if click is not None:
         displayed_w = click.get("width") or image.width
@@ -242,14 +260,17 @@ def main() -> None:
         selected = find_ship_at_point(px, py, frame_rows)
 
     with col_panels:
-        render_ship_panel(frame_rows, current_frame, first_seen, fps, all_rows=rows, occlusions=occlusions)
+        render_ship_panel(
+            frame_rows, current_frame, first_seen, fps,
+            all_rows=rows, occlusions=occlusions, focus_id=focus_id,
+        )
         st.divider()
         render_id_editor(selected, current_frame, run_key, rows)
         st.divider()
         render_occlusion_log(occlusions, fps)
 
     st.divider()
-    render_timeline(rows, current_frame)
+    render_timeline(rows, current_frame, focus_id=focus_id)
 
     # Auto-advance when Play is on. Step one frame, pace to ~video FPS, rerun.
     # At the end we simply stop advancing; nav_playing is a widget key and can't

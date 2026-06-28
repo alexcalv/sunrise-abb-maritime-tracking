@@ -26,6 +26,7 @@ def render_ship_panel(
     fps: float,
     all_rows: list[dict[str, Any]] | None = None,
     occlusions: list[dict[str, Any]] | None = None,
+    focus_id: int | None = None,
 ) -> None:
     st.subheader("Ships on screen")
 
@@ -47,11 +48,18 @@ def render_ship_panel(
         st.info("No vessel detected at this frame.")
         return
 
+    rows_to_show = frame_rows
+    if focus_id is not None:
+        rows_to_show = [row for row in frame_rows if row["id"] == focus_id]
+        if not rows_to_show:
+            st.info(f"Ship #{focus_id} is not on this frame.")
+            return
+
     safe_fps = fps if fps and fps > 0 else 25.0
     counts = occlusion_counts(occlusions) if occlusions else {}
-    st.caption(f"{len(frame_rows)} vessel(s) at frame {current_frame}")
+    st.caption(f"{len(rows_to_show)} vessel(s) at frame {current_frame}")
 
-    for row in sorted(frame_rows, key=lambda r: r["id"]):
+    for row in sorted(rows_to_show, key=lambda r: r["id"]):
         tid = row["id"]
         cx, cy = _center(row["bbox"])
         duration_frames = current_frame - first_seen.get(tid, current_frame)

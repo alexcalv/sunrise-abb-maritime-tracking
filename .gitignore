@@ -14,6 +14,7 @@ runs
 docker-compose.override.yml
 
 # --- Unity (MaritimeSim2) ---
+MaritimeSim2/Recordings/*
 MaritimeSim2/Library/
 MaritimeSim2/Logs/
 MaritimeSim2/UserSettings/

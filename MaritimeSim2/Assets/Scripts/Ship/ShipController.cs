@@ -32,8 +32,17 @@ public class ShipController : MonoBehaviour
         speed          = speedMps;
         classId        = cls;
 
-        transform.position = startPos;
-        transform.rotation = Quaternion.Euler(0f, headingDegrees, 0f);
+        Quaternion startRot = Quaternion.Euler(0f, headingDegrees, 0f);
+        transform.SetPositionAndRotation(startPos, startRot);
+
+        if (_rb == null) _rb = GetComponent<Rigidbody>();
+        if (_rb != null)
+        {
+            _rb.position        = startPos;
+            _rb.rotation        = startRot;
+            _rb.velocity        = Vector3.zero;
+            _rb.angularVelocity = Vector3.zero;
+        }
     }
 
     void Awake()

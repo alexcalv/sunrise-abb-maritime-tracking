@@ -122,7 +122,7 @@ NavMeshSettings:
     debug:
       m_Flags: 0
   m_NavMeshData: {fileID: 0}
---- !u!1 &531988303
+--- !u!1 &186280851
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -130,8 +130,8 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 531988305}
-  - component: {fileID: 531988304}
+  - component: {fileID: 186280853}
+  - component: {fileID: 186280852}
   m_Layer: 0
   m_Name: __SimulationDirector
   m_TagString: Untagged
@@ -139,13 +139,13 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &531988304
+--- !u!114 &186280852
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 531988303}
+  m_GameObject: {fileID: 186280851}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 94549e91c214fe341b48fe74ecc25c79, type: 3}
@@ -156,19 +156,17 @@ MonoBehaviour:
   - {fileID: 5493286432875953091, guid: 5b45bd764efe77f4eb3dfddb4e650eee, type: 3}
   - {fileID: 668044199688245254, guid: 565cf2ed39eebbb4c83c332b88f45194, type: 3}
   - {fileID: 6347379293689434316, guid: c6a62ff01b7c02948863e035166fe7f9, type: 3}
-  - {fileID: 233266840649873742, guid: f3b4989f8280ec647bb197181ab99f7a, type: 3}
-  - {fileID: 5933145819929797750, guid: a1d7e9604f501764681ba5f94d38f2fd, type: 3}
   - {fileID: 7435628059755606181, guid: 024d72c106c563d4eab9a8af2e9f58c0, type: 3}
   - {fileID: 5684476898317600408, guid: 89c3483a5e532a04ea6ada19180bca12, type: 3}
-  configPathOverride: E:\Programing\UnityProjects\MaritimeSim2\Assets\configs\example_config.json
-  outDirOverride: Recordings\test01
---- !u!4 &531988305
+  configPathOverride: 
+  outDirOverride: 
+--- !u!4 &186280853
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 531988303}
+  m_GameObject: {fileID: 186280851}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
@@ -632,4 +630,4 @@ SceneRoots:
   - {fileID: 610555981}
   - {fileID: 674481610}
   - {fileID: 732773188}
-  - {fileID: 531988305}
+  - {fileID: 186280853}

@@ -1,0 +1,37 @@
+{
+  "video":  { "width": 1280, "height": 720, "fps": 30, "duration": 16.0 },
+
+  "ships": [
+    {
+      "name": "tanker_51",
+      "prefab": "Ship5",
+      "position": [ -10, 0, 5 ],
+      "heading": 0,
+      "speed": 5.0,
+      "classId": 8
+    },
+    {
+      "name": "tanker_61",
+      "prefab": "Ship6",
+      "position": [ -6, 0, 5 ],
+      "heading": 0,
+      "speed": 5.0,
+      "classId": 8
+    }
+  ],
+
+  "cameras": [
+    {
+      "name": "cam_1",
+      "position": [ 8, 1, -32 ],
+      "rotation": [ -9, -73, 0 ],
+      "fov": 70
+    },
+    {
+      "name": "cam_2",
+      "position": [ 4.6, 1.5, -0.5 ],
+      "rotation": [ -7, -107, 0.4 ],
+      "fov": 70
+    }
+  ]
+}
